@@ -373,7 +373,7 @@ int clipMovingRects(rect *a, v2 *da, rect *b, v2 *db, v2 *n, float *t)
    }
 
    if (tstart < tend) {
-      *t = fmax(tstart - PHYS_EPSILON, 0.f);
+      *t = tstart;
       *n = normal;
       return 1;
    }
