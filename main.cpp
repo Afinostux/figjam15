@@ -167,7 +167,7 @@ rect makeRect(float x, float y, float w, float h)
 
 rect expandRect(rect *r, float e)
 {
-   rect res;
+   rect res = *r;
    res.x -= e;
    res.y -= e;
    res.w += 2*e;
@@ -261,7 +261,6 @@ int clipMovingRects(rect *a, v2 *da, rect *b, v2 *db, v2 *n, float *t)
    float tend = 1.f;
    rect mrect = (*a)*(*b);
    v2 vel = (*db)-(*da);
-   //printf("vely %f\n", vel.y);
    v2 normal = {};
 
 #if 0
@@ -383,6 +382,10 @@ int rectIntersectsWalls(rect *mr)
 
 int rectOnGround(rect *mr)
 {
+   rect b = expandRect(mr, -0.5);
+   b.y += 1;
+   drawRect(ren, &b);
+   return rectIntersectsWalls(&b);
 }
 
 int clipMovingRectWithWalls(rect *mr, v2 *mrv, v2 *n, float *t)
@@ -402,14 +405,6 @@ int clipMovingRectWithWalls(rect *mr, v2 *mrv, v2 *n, float *t)
          int clipped = clipMovingRects(mr, mrv, &w->bounds, &wallv, &testn, &testt);
          res |= clipped;
          if (clipped != 0 && testt < bestt) {
-#if 0
-            printf("clip! %d\n", i);
-            printv2(&testn, "normal");
-            if (v2lequal(&testn, PHYS_EPSILON)) {
-               printf("culprit here\n");
-            }
-            assert(testt >= 0);
-#endif
             bestt = testt;
             bestn = testn;
          }
@@ -540,14 +535,12 @@ void fireControlEvent(SDL_Event *e)
                if (c->axis.axis == e->jaxis.axis) {
                   if (e->jaxis.value * c->axis.side > JOY_THRESHOLD) {
                      if (!c->held) {
-                        printf("activated %d\n", i);
                         c->held = 1;
                         c->pressed = 1;
                         c->frames = 0;
                      }
                   } else {
                      if (c->held) {
-                        printf("deactivated %d\n", i);
                         c->held = 0;
                         c->released = 1;
                         c->frames = 0;
@@ -561,14 +554,12 @@ void fireControlEvent(SDL_Event *e)
                if (c->button.button == e->jbutton.button) {
                   if (e->type == SDL_JOYBUTTONDOWN) {
                      if (!c->held) {
-                        printf("activated %d\n", i);
                         c->held = 1;
                         c->pressed = 1;
                         c->frames = 0;
                      }
                   } else {
                      if (c->held) {
-                        printf("deactivated %d\n", i);
                         c->held = 0;
                         c->released = 1;
                         c->frames = 0;
@@ -582,14 +573,12 @@ void fireControlEvent(SDL_Event *e)
                if (c->key.keysym == e->key.keysym.sym) {
                   if (e->type == SDL_KEYDOWN) {
                      if (!c->held) {
-                        printf("activated %d\n", i);
                         c->held = 1;
                         c->pressed = 1;
                         c->frames = 0;
                      }
                   } else {
                      if (c->held) {
-                        printf("deactivated %d\n", i);
                         c->held = 0;
                         c->released = 1;
                         c->frames = 0;
@@ -675,7 +664,6 @@ struct player {
 rect * getPlayerBounds(player *p)
 {
    if (p->last_bounds_frame != frame) {
-      //printf("get bounds %d\n", frame);
       p->worldbounds.x = p->position.x - 0.5*p->w;
       p->worldbounds.y = p->position.y - 0.5*p->h;
       p->worldbounds.w = p->w;
@@ -733,10 +721,10 @@ player createPlayer(float x, float y)
 
 void tickPlayer(player *p)
 {
-   float player_accel = 0.04;
+   float player_accel = 0.1;
    float player_wspeed = 1.5;
    float player_gravity = 0.09;
-   float player_jump = 3.8;
+   float player_jump = 4.5;
    int player_jump_grace = 20;
    rect bounds = *getPlayerBounds(p);
    if (con.left->held) {
@@ -748,7 +736,7 @@ void tickPlayer(player *p)
    }
 
    if (con.jump->held && con.jump->frames < player_jump_grace) {
-      if (p->velocity.y == 0.f) {
+      if (rectOnGround(getPlayerBounds(p))) {
          p->velocity.y = -player_jump;
       }
    }
@@ -771,6 +759,21 @@ void drawPlayer(player *p)
 #define start_w 640
 #define start_h 480
 
+void loadLevel(const char * fname)
+{
+   SDL_RWops *rw = SDL_RWFromFile(fname, "r");
+   if (rw) {
+      clearWalls();
+      unsigned int size = SDL_RWsize(rw);
+      char * fileblock = (char*)malloc(size);
+      SDL_RWread(rw, fileblock, 1, size);
+      int fp = 0;
+      while(isspace(fileblock[fp])) {
+         fp++;
+      }
+
+   }
+}
 
 void reproject_screen(int w, int h)
 {
@@ -804,6 +807,7 @@ int main(int argc, char ** argv)
    createTileAlignedWall(0, 0, field_w_tiles, 1);
    createTileAlignedWall(field_w_tiles - 1, 0, 1, field_h_tiles);
    createTileAlignedWall(0, 0, 1, field_h_tiles);
+   loadLevel("testlevel.txt");
 
    float t;
    float angle = 0.f;
