@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <float.h>
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_mixer.h>
 
 #define PHYS_EPSILON sqrt(FLT_EPSILON)
 
@@ -173,22 +174,6 @@ struct {
    v2 position;
 } camera;
 
-rect makeRect(float x, float y, float w, float h)
-{
-   rect res = {x, y, w, h};
-   return res;
-}
-
-rect expandRect(rect *r, float e)
-{
-   rect res = *r;
-   res.x -= e;
-   res.y -= e;
-   res.w += 2*e;
-   res.h += 2*e;
-   return res;
-}
-
 inline
 SDL_Rect rectToSDLRect(rect *r)
 {
@@ -215,6 +200,70 @@ void fillRect(SDL_Renderer *ren, rect *r)
    crect.x -= camera.position.x;
    crect.y -= camera.position.y;
    SDL_RenderFillRect(ren, &crect);
+}
+
+#define ROOM_CONNECTION_MAX 9
+#define RC_FILE_MAX 20
+struct {
+   rect bounds;
+   rect connections[ROOM_CONNECTION_MAX];
+   char roomname[RC_FILE_MAX];
+   char filenames[ROOM_CONNECTION_MAX][RC_FILE_MAX];
+   v2 transition_offset;
+   int connection_count;
+} room;
+
+void setRoomName(const char* nname)
+{
+   int size = strlen(nname);
+   size = (size < RC_FILE_MAX)?size:RC_FILE_MAX;
+   strncpy(room.roomname, nname, size);
+   room.roomname[size] = 0;
+   //printf("filename is %s\n", room.roomname);
+}
+
+void resetConnections()
+{
+   rect rs = {};
+   for (int i = 0; i < ROOM_CONNECTION_MAX; i++) {
+      room.connections[i] = rs;
+      room.filenames[i][0] = 0;
+   }
+}
+
+void drawConnections()
+{
+   SDL_SetRenderDrawColor(ren, 0, 100, 0, 255);
+   for (int i = 0; i < ROOM_CONNECTION_MAX; i++) {
+      drawRect(ren, room.connections + i);
+   }
+}
+
+rect makeRect(float x, float y, float w, float h)
+{
+   rect res = {x, y, w, h};
+   return res;
+}
+
+rect makeTileAlignedRect(int x, int y, int w, int h)
+{
+   return makeRect(x * tile_size, y * tile_size, w * tile_size, h * tile_size);
+}
+
+rect expandRect(rect *r, float e)
+{
+   rect res = *r;
+   res.x -= e;
+   res.y -= e;
+   res.w += 2*e;
+   res.h += 2*e;
+   return res;
+}
+
+int pointInRect(rect *r, v2 *p)
+{
+   return (p->x >= r->x && p->x <= r->x + r->w &&
+         p->y >= r->y && p->y <= r->y + r->h);
 }
 
 //minkowski
@@ -373,7 +422,7 @@ int clipMovingRects(rect *a, v2 *da, rect *b, v2 *db, v2 *n, float *t)
    }
 
    if (tstart < tend) {
-      *t = tstart;
+      *t = fmax(tstart - PHYS_EPSILON, 0);
       *n = normal;
       return 1;
    }
@@ -383,8 +432,8 @@ int clipMovingRects(rect *a, v2 *da, rect *b, v2 *db, v2 *n, float *t)
 void setCameraFocus(v2 * p)
 {
    v2 tpos;
-   tpos.x = fmin(fmax(camera.bounds.x, floor(p->x - field_w / 2) + 0.5), camera.bounds.x + camera.bounds.w);
-   tpos.y = fmin(fmax(camera.bounds.y, floor(p->y - field_h / 2) + 0.5), camera.bounds.y + camera.bounds.h);
+   tpos.x = fmin(fmax(camera.bounds.x, floor(p->x - field_w / 2)), camera.bounds.x + camera.bounds.w);
+   tpos.y = fmin(fmax(camera.bounds.y, floor(p->y - field_h / 2)), camera.bounds.y + camera.bounds.h);
    camera.position = tpos;
 }
 
@@ -392,6 +441,54 @@ void setCameraFocus(float x, float y)
 {
    v2 r = makev2(x, y);
    setCameraFocus(&r);
+}
+
+struct ladder {
+   rect bounds;
+};
+
+tc_create(ladder, ladder, 64);
+
+void createTileAlignedLadder(int x, int y, int w, int h)
+{
+   ladder *l = tc_new(ladder);
+   if (l) {
+      l->bounds.x = x * tile_size;
+      l->bounds.y = y * tile_size;
+      l->bounds.w = w * tile_size;
+      l->bounds.h = h * tile_size;
+   }
+}
+
+ladder* getIntersectingLadder(rect *mr)
+{
+   for (int i = 0; i < countof(ladder); i++) {
+      ladder *l = tc_at(ladder, i);
+      if (rectsOverlap(mr, &l->bounds)) {
+         return l;
+      }
+   }
+   return 0;
+}
+
+int rectIntersectsLadders(rect *mr)
+{
+   for (int i = 0; i < countof(ladder); i++) {
+      ladder *l = tc_at(ladder, i);
+      if (rectsOverlap(mr, &l->bounds)) {
+         return 1;
+      }
+   }
+   return 0;
+}
+
+void drawLadders()
+{
+   SDL_SetRenderDrawColor(ren, 120, 80, 20, 255);
+   for (int i = 0; i < countof(ladder); i++) {
+      ladder *l = tc_at(ladder, i);
+      drawRect(ren, &l->bounds);
+   }
 }
 
 struct wall {
@@ -484,6 +581,7 @@ void getMotionWalled(rect *r, v2 *v, v2 *out_velocity, v2 *out_displacement)
 void clearWalls()
 {
    countof(wall) = 0;
+   countof(ladder) = 0;
 }
 
 void createWall(float x, float y, float w, float h)
@@ -713,6 +811,8 @@ control * bindButton(int button)
 
 struct {
    control *left;
+   control *up;
+   control *down;
    control *right;
    control *jump;
 } con;
@@ -734,6 +834,8 @@ struct player {
    float w, h;
    int active;
    int alive;
+   int jumping;
+   int onladder;
    int last_bounds_frame;
 } p1;
 
@@ -768,24 +870,61 @@ void tickPlayer(player *p)
    float player_gravity = 0.09;
    float player_jump = 4.5;
    int player_jump_grace = 20;
-   rect bounds = *getPlayerBounds(p);
-   if (con.left->held) {
-      p->velocity.x = fapproach(p->velocity.x, -player_wspeed, player_accel);
-   } else if (con.right->held) {
-      p->velocity.x = fapproach(p->velocity.x, player_wspeed, player_accel);
+   if (p->onladder) {
+      ladder *l = getIntersectingLadder(getPlayerBounds(p));
+      if (l) {
+         p->position.x = fapproach(p->position.x, l->bounds.x + l->bounds.w * 0.5, 1);
+         if (con.up->held) {
+            p->position.y -= 1;
+         } else if (con.down->held) {
+            p->position.y += 1;
+         }
+         if (con.jump->pressed) {
+            if (!rectIntersectsWalls(getPlayerBounds(p))) {
+               p->onladder = 0;
+               p->velocity.x = 0;
+               p->velocity.y = -player_jump * 0.5;
+            }
+         }
+      } else {
+         p->onladder = 0;
+         p->velocity.x = 0;
+         p->velocity.y = 0;
+      }
    } else {
-      p->velocity.x = fapproach(p->velocity.x, 0, player_accel);
-   }
+      rect bounds = *getPlayerBounds(p);
+      if (con.left->held) {
+         p->velocity.x = fapproach(p->velocity.x, -player_wspeed, player_accel);
+      } else if (con.right->held) {
+         p->velocity.x = fapproach(p->velocity.x, player_wspeed, player_accel);
+      } else {
+         p->velocity.x = fapproach(p->velocity.x, 0, player_accel);
+      }
 
-   if (con.jump->held && con.jump->frames < player_jump_grace) {
-      if (rectOnGround(getPlayerBounds(p))) {
-         p->velocity.y = -player_jump;
+      if (con.jump->held && con.jump->frames < player_jump_grace) {
+         if (rectOnGround(getPlayerBounds(p))) {
+            p->velocity.y = -player_jump;
+            p->jumping = 1;
+         }
+      }
+      if (p->jumping) {
+         if (con.jump->released && p->velocity.y < 0.f) {
+            p->jumping = 0;
+            p->velocity.y *= 0.3;
+         } else if (p->velocity.y >= 0.f) {
+            p->jumping = 0;
+         }
+      }
+      p->velocity.y += player_gravity;
+      v2 frame_displacement;
+      getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
+      p->position = p->position + frame_displacement;
+      if (con.up->pressed || con.down->pressed) {
+         if (rectIntersectsLadders(getPlayerBounds(p))) {
+            p->onladder = 1;
+         }
       }
    }
-   p->velocity.y += player_gravity;
-   v2 frame_displacement;
-   getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
-   p->position = p->position + frame_displacement;
    setCameraFocus(&p->position);
 }
 
@@ -795,11 +934,15 @@ void drawPlayer(player *p)
    fillRect(ren, getPlayerBounds(p));
 }
 
-void loadLevel(const char * fname)
+void loadLevel(const char * fname, int connection)
 {
    SDL_RWops *rw = SDL_RWFromFile(fname, "r");
+   if (connection != 0) {
+      int debug = 5;
+   }
    if (rw) {
       clearWalls();
+      room.connection_count = 0;
       unsigned int size = SDL_RWsize(rw);
       char * fileblock = (char*)malloc(size);
       SDL_RWread(rw, fileblock, 1, size);
@@ -847,10 +990,45 @@ void loadLevel(const char * fname)
          fp++;
       }
 
+      resetConnections();
+      while(fileblock[fp] == '+' && room.connection_count < ROOM_CONNECTION_MAX) {
+         char *fstart = fileblock + fp + 1;
+         int fcount = 0;
+         while(!isspace(fileblock[fp])) {
+            fp++;
+            fcount++;
+         }
+         strncpy(room.filenames[room.connection_count], fstart, fcount);
+         room.filenames[room.connection_count][fcount-1] = 0;
+         room.connection_count++;
+         if (connection) {
+            if (strcmp(room.filenames[room.connection_count-1], room.roomname) == 0) {
+               connection = room.connection_count;
+            }
+         }
+         while(isspace(fileblock[fp])) {
+            fp++;
+         }
+      }
+      setRoomName(fname);
+      while(fileblock[fp] == '+') {
+         while(!isspace(fileblock[fp])) {
+            fp++;
+         }
+         while(isspace(fileblock[fp])) {
+            fp++;
+         }
+      }
+
       camera.bounds.x = 0;
       camera.bounds.y = 0;
       camera.bounds.w = (screens_w - 1) * field_w;
       camera.bounds.h = (screens_h - 1) * field_h;
+
+      room.bounds.x = 0;
+      room.bounds.y = 0;
+      room.bounds.w = (screens_w) * field_w;
+      room.bounds.h = (screens_h) * field_h;
 
       int tile_xc = field_w_tiles / tiles_w;
       int tile_yc = field_h_tiles / tiles_h;
@@ -870,14 +1048,37 @@ void loadLevel(const char * fname)
       }
       free(fileblock);
       i = 0;
+      int reverse = 0;
       while (i < tilecount) {
          switch(block[i]) {
             case '@':
                {
-                  int x = (i % pitch) * rtw + (0.5*rtw -7);
-                  int y = (i / pitch) * rth + (0.5*rth -7);
-                  p1 = createPlayer(x, y);
+                  if (!p1.active) {
+                     int x = (i % pitch) * rtw + (0.5*rtw -7);
+                     int y = (i / pitch) * rth + (0.5*rth -7);
+                     p1 = createPlayer(x, y);
+                  }
                } break;
+            case 'l':
+               {
+                  int x = i % pitch;
+                  int y = i / pitch;
+                  int h = 1;
+                  while (y + h < maxh) {
+                     char ex = block[x + (y+h)*pitch];
+                     if (ex == 'l') {
+                        block[x + (y+h)*pitch] = '-';
+                     } else if (ex == 'L') {
+                        block[x + (y+h)*pitch] = '#';
+                     } else {
+                        break;
+                     }
+                     h++;
+                  }
+                  createTileAlignedLadder(x * tile_xc, y * tile_yc, tile_xc, h * tile_yc);
+               } break;
+            case 'L':
+               reverse = 1;
             case '#':
                {
                   int rx = i % pitch;
@@ -886,18 +1087,17 @@ void loadLevel(const char * fname)
                   int rh = 1;
                   while (rx + rw < pitch) {
                      char ex = block[rx + rw + ry * pitch];
-                     if (ex == '#') {
+                     if (ex == '#' || ex == 'L') {
                         rw += 1;
                      } else {
                         break;
                      }
                   }
-                  printf("width %d\n", rw);
                   while (ry + rh < maxh) {
                      int expand = 1;
                      for (int x = rx; x < rx + rw; x++) {
                         char ex = block[x + (ry + rh)*pitch];
-                        if (ex != '#') {
+                        if (ex != '#' && ex != 'L') {
                            expand = 0;
                            break;
                         }
@@ -908,15 +1108,106 @@ void loadLevel(const char * fname)
                         break;
                      }
                   }
-                  printf("height %d\n", rh);
                   for (int y = ry; y < ry + rh; y++) {
                      for (int x = rx; x < rx + rw; x++) {
-                        block[x + y*pitch] = ' ';
+                        if (block[x + y*pitch] == '#') {
+                           block[x + y*pitch] = ' ';
+                        } else {
+                           block[x + y*pitch] = 'l';
+                        }
                      }
                   }
                   createTileAlignedWall(rx * tile_xc, ry * tile_yc, rw * tile_xc, rh * tile_yc);
+                  if (reverse) {
+                     reverse = 0;
+                     i--;
+                  }
                } break;
             default:
+               if (isdigit(block[i]) && block[i] != '0') {
+                  char n = block[i];
+                  block[i] = ' ';
+                  int v = (n - '0') - 1;
+                  int x = i % pitch;
+                  int y = i / pitch;
+                  if (x == 0) {
+                     int h = 1;
+                     int expand = 1;
+                     while (expand && y + h < maxh) {
+                        char c = block[(y+h)*pitch];
+                        if (c == n) {
+                           block[(y+h)*pitch] = ' ';
+                           h += 1;
+                        } else {
+                           expand = 0;
+                        }
+                     }
+                     rect res = makeTileAlignedRect(-1, y * tile_yc, 2, h * tile_yc);
+                     room.connections[v] = res;
+                     if (v + 1 == connection) {
+                        p1.position.x = res.x + room.transition_offset.x;
+                        p1.position.y = res.y + room.transition_offset.y;
+                     }
+                  } else if (y == 0) {
+                     int w = 1;
+                     int expand = 1;
+                     while (expand && x + w < pitch) {
+                        int offset = x + w + (y)*pitch;
+                        char c = block[offset];
+                        //printf("%c\n", c);
+                        if (c == n) {
+                           block[offset] = ' ';
+                           w += 1;
+                        } else {
+                           expand = 0;
+                        }
+                     }
+                     rect res = makeTileAlignedRect(x * tile_xc, -1, w * tile_xc, 2);
+                     room.connections[v] = res;
+                     if (v + 1 == connection) {
+                        p1.position.x = res.x + room.transition_offset.x;
+                        p1.position.y = res.y + room.transition_offset.y;
+                     }
+                  } else if (x == pitch-1) {
+                     int h = 1;
+                     int expand = 1;
+                     while (expand && y + h < maxh) {
+                        char c = block[pitch - 1 + (y+h)*pitch];
+                        if (c == n) {
+                           block[pitch - 1 + (y+h)*pitch] = ' ';
+                           h += 1;
+                        } else {
+                           expand = 0;
+                        }
+                     }
+                     rect res = makeTileAlignedRect((pitch-1) * tile_xc + 1, y * tile_yc, 2, h * tile_yc);
+                     room.connections[v] = res;
+                     if (v + 1 == connection) {
+                        p1.position.x = res.x + room.transition_offset.x;
+                        p1.position.y = res.y + room.transition_offset.y;
+                     }
+                  } else if (y == maxh-1) {
+                     int w = 1;
+                     int expand = 1;
+                     while (expand && x + w < pitch) {
+                        int offset = x + w + (y)*pitch;
+                        char c = block[offset];
+                        //printf("%c\n", c);
+                        if (c == n) {
+                           block[offset] = ' ';
+                           w += 1;
+                        } else {
+                           expand = 0;
+                        }
+                     }
+                     rect res = makeTileAlignedRect(x * tile_xc, (maxh - 1) * tile_yc + 1, w * tile_xc, 2);
+                     room.connections[v] = res;
+                     if (v + 1 == connection) {
+                        p1.position.x = res.x + room.transition_offset.x;
+                        p1.position.y = res.y + room.transition_offset.y;
+                     }
+                  }
+               }
                break;
          }
          i++;
@@ -959,7 +1250,7 @@ int main(int argc, char ** argv)
    createTileAlignedWall(field_w_tiles - 1, 0, 1, field_h_tiles);
    createTileAlignedWall(0, 0, 1, field_h_tiles);
 #endif
-   loadLevel("testlevel.txt");
+   loadLevel("startroom.txt", 0);
 
    float t;
    float angle = 0.f;
@@ -971,10 +1262,14 @@ int main(int argc, char ** argv)
    if (joy) {
       con.left = bindAxis(0, -1);
       con.right = bindAxis(0, 1);
+      con.up = bindAxis(1, -1);
+      con.down = bindAxis(1, 1);
       con.jump = bindButton(0);
    } else {
       con.left = bindKey(SDLK_LEFT);
       con.right = bindKey(SDLK_RIGHT);
+      con.up = bindKey(SDLK_UP);
+      con.down = bindKey(SDLK_DOWN);
       con.jump = bindKey(SDLK_d);
    }
 
@@ -1009,56 +1304,40 @@ int main(int argc, char ** argv)
       SDL_SetRenderDrawColor(ren, 25, 25, 25, 255);
       SDL_RenderClear(ren);
 
-#if 0
-      angle += 0.01;
-
-      testvel = makeRotatedV2(400, 0, angle);
-
-      SDL_SetRenderDrawColor(ren, 250, 250, 250, 255);
-      drawRect(ren, &test);
-      res = test;
-
-      v2 norm = {};
-      for (int i = 0; i < 2; i++) {
-         if (clipMovingRectWithWalls(&res, &testvel, &norm, &t)) {
-            v2 resvel = testvel * t;
-            res.x = res.x + resvel.x;
-            res.y = res.y + resvel.y;
-            SDL_SetRenderDrawColor(ren, 25, 250, 25, 255);
-            drawRect(ren, &res);
-            testvel = testvel * (1 - t);
-            SDL_SetRenderDrawColor(ren, 250, 20, 25, 255);
-            rect t2 = res;
-            t2.x = res.x + testvel.x;
-            t2.y = res.y + testvel.y;
-            drawRect(ren, &t2);
-            if (fabs(norm.x) > PHYS_EPSILON) {
-               testvel.x = 0;
-            }
-            if (fabs(norm.y) > PHYS_EPSILON) {
-               testvel.y = 0;
-            }
-         } else {
-            res.x = res.x + testvel.x;
-            res.y = res.y + testvel.y;
-            drawRect(ren, &res);
-            break;
-         }
-      }
-#endif
 
       tickPlayer(&p1);
 
+
       SDL_SetRenderDrawColor(ren, 0, 255, 255, 255);
       debugDrawWalls(ren);
-      drawTestSprite(ren, 10, 10, &st);
+      drawLadders();
       drawPlayer(&p1);
+      drawConnections();
       //drawing goes here
       SDL_SetRenderTarget(ren, 0);
       SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
       SDL_RenderClear(ren);
       SDL_RenderCopy(ren, pixelbuffer, 0, &projection);
       SDL_RenderPresent(ren);
+
+      int lload = 0;
+      if (!pointInRect(&room.bounds, &p1.position)) {
+         for (int i = 0; i < ROOM_CONNECTION_MAX; i++) {
+            if (pointInRect(&room.connections[i], &p1.position)) {
+               lload = i + 1;
+               room.transition_offset.x = p1.position.x - room.connections[i].x;
+               room.transition_offset.y = p1.position.y - room.connections[i].y;
+               break;
+            }
+         }
+      }
+      if (lload > 0) {
+         char buf[RC_FILE_MAX];
+         strncpy(buf, room.filenames[lload - 1], RC_FILE_MAX);
+         //printf("going to %s\n", buf);
+         loadLevel(buf, 1);
+      }
+
       while (SDL_GetPerformanceCounter() < next_step) {
          SDL_Delay(1);
       }
