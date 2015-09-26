@@ -12,6 +12,7 @@
 SDL_Window *win;
 SDL_Renderer *ren;
 SDL_Texture *pixelbuffer;
+SDL_Joystick *joy;
 SDL_Rect projection;
 int running = 1;
 int frame;
@@ -32,6 +33,25 @@ int frame;
 #define tc_at(lcs, ind) (dataof(lcs) + (ind))
 #define tc_at_safe(lcs, ind) ((tc_inarray(lcs, ind))?tc_at(lcs, ind):0)
 #define tc_at_wrap(lcs, ind) (tc_at(lcs, (ind)%countof(lcs)))
+
+Uint64 secondsToPCF(float seconds)
+{
+   return SDL_GetPerformanceFrequency() * seconds;
+}
+
+inline
+float fapproach(float a, float t, float step)
+{
+   if (fabs(a - t) < step) {
+      return t;
+   } else {
+      if (a > t) {
+         return a - step;
+      } else {
+         return a + step;
+      }
+   }
+}
 
 union v2 {
    float m[2];
@@ -361,6 +381,10 @@ int rectIntersectsWalls(rect *mr)
    return 0;
 }
 
+int rectOnGround(rect *mr)
+{
+}
+
 int clipMovingRectWithWalls(rect *mr, v2 *mrv, v2 *n, float *t)
 {
    int res = 0;
@@ -464,6 +488,180 @@ void drawTestSprite(SDL_Renderer *ren, float x, float y, testsprite *tsr)
    SDL_RenderFillRect(ren, &tsr->bounds);
 }
 
+enum control_type {
+   ct_dummy,
+   ct_axis,
+   ct_button,
+   ct_key
+};
+
+#define JOY_THRESHOLD 6553
+
+struct control {
+   int type;
+   int pressed;
+   int held;
+   int released;
+   int frames;
+   union {
+      struct {
+         int axis;
+         int side;
+      } axis;
+      struct {
+         int button;
+      } button;
+      struct {
+         int keysym;
+      } key;
+   };
+};
+
+tc_create(control, control, 16);
+
+void startControlFrame()
+{
+   for (int i = 0; i < countof(control); i++) {
+      control *c = tc_at(control, i);
+      c->pressed = 0;
+      c->released = 0;
+      c->frames++;
+   }
+}
+
+void fireControlEvent(SDL_Event *e)
+{
+   assert(e);
+   for (int i = 0; i < countof(control); i++) {
+      control *c = tc_at(control, i);
+      switch (c->type) {
+         case ct_axis:
+            if (e->type == SDL_JOYAXISMOTION) {
+               if (c->axis.axis == e->jaxis.axis) {
+                  if (e->jaxis.value * c->axis.side > JOY_THRESHOLD) {
+                     if (!c->held) {
+                        printf("activated %d\n", i);
+                        c->held = 1;
+                        c->pressed = 1;
+                        c->frames = 0;
+                     }
+                  } else {
+                     if (c->held) {
+                        printf("deactivated %d\n", i);
+                        c->held = 0;
+                        c->released = 1;
+                        c->frames = 0;
+                     }
+                  }
+               }
+            }
+            break;
+         case ct_button:
+            if (e->type == SDL_JOYBUTTONDOWN || e->type == SDL_JOYBUTTONUP) {
+               if (c->button.button == e->jbutton.button) {
+                  if (e->type == SDL_JOYBUTTONDOWN) {
+                     if (!c->held) {
+                        printf("activated %d\n", i);
+                        c->held = 1;
+                        c->pressed = 1;
+                        c->frames = 0;
+                     }
+                  } else {
+                     if (c->held) {
+                        printf("deactivated %d\n", i);
+                        c->held = 0;
+                        c->released = 1;
+                        c->frames = 0;
+                     }
+                  }
+               }
+            }
+            break;
+         case ct_key:
+            if (e->type == SDL_KEYDOWN || e->type == SDL_KEYUP) {
+               if (c->key.keysym == e->key.keysym.sym) {
+                  if (e->type == SDL_KEYDOWN) {
+                     if (!c->held) {
+                        printf("activated %d\n", i);
+                        c->held = 1;
+                        c->pressed = 1;
+                        c->frames = 0;
+                     }
+                  } else {
+                     if (c->held) {
+                        printf("deactivated %d\n", i);
+                        c->held = 0;
+                        c->released = 1;
+                        c->frames = 0;
+                     }
+                  }
+               }
+            }
+            break;
+         default:
+            break;
+      };
+   }
+#if 0
+   switch (e->type) {
+      case SDL_JOYAXISMOTION:
+         printf("axis %d: %d\n", e->jaxis.axis, e->jaxis.value);
+         break;
+      case SDL_JOYBUTTONDOWN:
+         printf("button %d: down\n", e->jbutton.button);
+         break;
+      case SDL_JOYBUTTONUP:
+         printf("button %d: up\n", e->jbutton.button);
+         break;
+      case SDL_KEYDOWN:
+         printf("key %s: down\n", SDL_GetKeyName(e->key.keysym.sym));
+         break;
+      case SDL_KEYUP:
+         printf("key %s: up\n", SDL_GetKeyName(e->key.keysym.sym));
+         break;
+      default:
+         break;
+   }
+#endif
+}
+
+control * bindKey(int keysym)
+{
+   control *nc = tc_new(control);
+   if (nc) {
+      nc->type = ct_key;
+      nc->key.keysym = keysym;
+   }
+   return nc;
+}
+
+control * bindAxis(int axis, int side)
+{
+   control *nc = tc_new(control);
+   if (nc) {
+      nc->type = ct_axis;
+      nc->axis.axis = axis;
+      nc->axis.side = (side > 0)?1:-1;
+   }
+   return nc;
+}
+
+control * bindButton(int button)
+{
+   control *nc = tc_new(control);
+   if (nc) {
+      nc->type = ct_button;
+      nc->button.button = button;
+   }
+   return nc;
+}
+
+struct {
+   control *left;
+   control *right;
+   control *jump;
+} con;
+
 struct player {
    v2 position;
    v2 velocity;
@@ -535,8 +733,26 @@ player createPlayer(float x, float y)
 
 void tickPlayer(player *p)
 {
+   float player_accel = 0.04;
+   float player_wspeed = 1.5;
+   float player_gravity = 0.09;
+   float player_jump = 3.8;
+   int player_jump_grace = 20;
    rect bounds = *getPlayerBounds(p);
-   p->velocity.y += 0.05;
+   if (con.left->held) {
+      p->velocity.x = fapproach(p->velocity.x, -player_wspeed, player_accel);
+   } else if (con.right->held) {
+      p->velocity.x = fapproach(p->velocity.x, player_wspeed, player_accel);
+   } else {
+      p->velocity.x = fapproach(p->velocity.x, 0, player_accel);
+   }
+
+   if (con.jump->held && con.jump->frames < player_jump_grace) {
+      if (p->velocity.y == 0.f) {
+         p->velocity.y = -player_jump;
+      }
+   }
+   p->velocity.y += player_gravity;
    v2 frame_displacement;
    getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
    p->position = p->position + frame_displacement;
@@ -567,7 +783,9 @@ void reproject_screen(int w, int h)
 
 int main(int argc, char ** argv)
 {
-   SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
+   Uint64 step_size = secondsToPCF(0.01);
+   Uint64 next_step = SDL_GetPerformanceCounter() + step_size;
+   SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK);
    atexit(SDL_Quit);
    win = SDL_CreateWindow("figjam", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, start_w, start_h, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
    ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
@@ -592,8 +810,20 @@ int main(int argc, char ** argv)
    rect test = makeRect(field_w/2, field_h/2, 16, 16);
    rect res = test;
    v2 testvel;
+   
+   joy = SDL_JoystickOpen(0);
+   if (joy) {
+      con.left = bindAxis(0, -1);
+      con.right = bindAxis(0, 1);
+      con.jump = bindButton(0);
+   } else {
+      con.left = bindKey(SDLK_LEFT);
+      con.right = bindKey(SDLK_RIGHT);
+      con.jump = bindKey(SDLK_d);
+   }
 
    while (running) {
+      startControlFrame();
       SDL_Event e;
       while (SDL_PollEvent(&e)) {
          switch (e.type) {
@@ -610,6 +840,10 @@ int main(int argc, char ** argv)
                   running = false;
                }
             case SDL_KEYUP:
+            case SDL_JOYAXISMOTION:
+            case SDL_JOYBUTTONDOWN:
+            case SDL_JOYBUTTONUP:
+               fireControlEvent(&e);
                break;
             default:
                break;
@@ -619,7 +853,7 @@ int main(int argc, char ** argv)
       SDL_SetRenderDrawColor(ren, 25, 25, 25, 255);
       SDL_RenderClear(ren);
 
-#if 1
+#if 0
       angle += 0.01;
 
       testvel = makeRotatedV2(400, 0, angle);
@@ -669,7 +903,10 @@ int main(int argc, char ** argv)
       SDL_RenderClear(ren);
       SDL_RenderCopy(ren, pixelbuffer, 0, &projection);
       SDL_RenderPresent(ren);
-      SDL_Delay(10);
+      while (SDL_GetPerformanceCounter() < next_step) {
+         SDL_Delay(1);
+      }
+      next_step = SDL_GetPerformanceCounter() + step_size;
       frame++;
    }
 }
