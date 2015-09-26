@@ -33,6 +33,15 @@ int frame;
 #define tc_at(lcs, ind) (dataof(lcs) + (ind))
 #define tc_at_safe(lcs, ind) ((tc_inarray(lcs, ind))?tc_at(lcs, ind):0)
 #define tc_at_wrap(lcs, ind) (tc_at(lcs, (ind)%countof(lcs)))
+#define tc_back(lcs) (tc_at(lcs, (countof(lcs) - 1)))
+#define tc_erase(lcs, ind) {if (tc_inarray(lcs, ind)) { *tc_at(lcs, ind) = tc_back(lcs); countof(lcs)--;}}
+
+#define field_w 320
+#define field_h 240
+#define field_w_tiles field_w/tile_size
+#define field_h_tiles field_h/tile_size
+#define start_w 640
+#define start_h 480
 
 Uint64 secondsToPCF(float seconds)
 {
@@ -159,6 +168,11 @@ struct rect {
    float x, y, w, h;
 };
 
+struct {
+   rect bounds;
+   v2 position;
+} camera;
+
 rect makeRect(float x, float y, float w, float h)
 {
    rect res = {x, y, w, h};
@@ -190,12 +204,16 @@ SDL_Rect rectToSDLRect(rect *r)
 void drawRect(SDL_Renderer *ren, rect *r)
 {
    SDL_Rect crect = rectToSDLRect(r);
+   crect.x -= camera.position.x;
+   crect.y -= camera.position.y;
    SDL_RenderDrawRect(ren, &crect);
 }
 
 void fillRect(SDL_Renderer *ren, rect *r)
 {
    SDL_Rect crect = rectToSDLRect(r);
+   crect.x -= camera.position.x;
+   crect.y -= camera.position.y;
    SDL_RenderFillRect(ren, &crect);
 }
 
@@ -362,6 +380,20 @@ int clipMovingRects(rect *a, v2 *da, rect *b, v2 *db, v2 *n, float *t)
    return 0;
 }
 
+void setCameraFocus(v2 * p)
+{
+   v2 tpos;
+   tpos.x = fmin(fmax(camera.bounds.x, floor(p->x - field_w / 2) + 0.5), camera.bounds.x + camera.bounds.w);
+   tpos.y = fmin(fmax(camera.bounds.y, floor(p->y - field_h / 2) + 0.5), camera.bounds.y + camera.bounds.h);
+   camera.position = tpos;
+}
+
+void setCameraFocus(float x, float y)
+{
+   v2 r = makev2(x, y);
+   setCameraFocus(&r);
+}
+
 struct wall {
    rect bounds;
    int active;
@@ -413,6 +445,40 @@ int clipMovingRectWithWalls(rect *mr, v2 *mrv, v2 *n, float *t)
    *n = bestn;
    *t = bestt;
    return res;
+}
+
+void getMotionWalled(rect *r, v2 *v, v2 *out_velocity, v2 *out_displacement)
+{
+   rect bounds = *r;
+   v2 clip_normal;
+   float clip_time;
+   v2 ovel = *v;
+   v2 frame_vel = *v;
+   v2 frame_displacement = {};
+   for (int i = 0; i < 2; i++) {
+      if (clipMovingRectWithWalls(&bounds, &frame_vel, &clip_normal, &clip_time)) {
+         frame_displacement = frame_displacement + (frame_vel * clip_time);
+         frame_vel = frame_vel * (1.f - clip_time);
+         if (fabs(clip_normal.x) > PHYS_EPSILON) {
+            ovel.x = 0;
+            frame_vel.x = 0;
+         }
+         if (fabs(clip_normal.y) > PHYS_EPSILON) {
+            ovel.y = 0;
+            frame_vel.y = 0;
+         }
+      } else {
+         frame_displacement = frame_displacement + frame_vel;
+         break;
+      }
+   }
+
+   if (out_velocity) {
+      *out_velocity = ovel;
+   }
+   if (out_displacement) {
+      *out_displacement = frame_displacement;
+   }
 }
 
 void clearWalls()
@@ -651,6 +717,16 @@ struct {
    control *jump;
 } con;
 
+struct p_shot {
+   rect worldbounds;
+   v2 position;
+   v2 velocity;
+   int shot_timer;
+   int last_bounds_frame;
+};
+
+tc_create(p_shot, pshot, 3);
+
 struct player {
    v2 position;
    v2 velocity;
@@ -670,40 +746,6 @@ rect * getPlayerBounds(player *p)
       p->worldbounds.h = p->h;
    }
    return &p->worldbounds;
-}
-
-void getMotionWalled(rect *r, v2 *v, v2 *out_velocity, v2 *out_displacement)
-{
-   rect bounds = *r;
-   v2 clip_normal;
-   float clip_time;
-   v2 ovel = *v;
-   v2 frame_vel = *v;
-   v2 frame_displacement = {};
-   for (int i = 0; i < 2; i++) {
-      if (clipMovingRectWithWalls(&bounds, &frame_vel, &clip_normal, &clip_time)) {
-         frame_displacement = frame_displacement + (frame_vel * clip_time);
-         frame_vel = frame_vel * (1.f - clip_time);
-         if (fabs(clip_normal.x) > PHYS_EPSILON) {
-            ovel.x = 0;
-            frame_vel.x = 0;
-         }
-         if (fabs(clip_normal.y) > PHYS_EPSILON) {
-            ovel.y = 0;
-            frame_vel.y = 0;
-         }
-      } else {
-         frame_displacement = frame_displacement + frame_vel;
-         break;
-      }
-   }
-
-   if (out_velocity) {
-      *out_velocity = ovel;
-   }
-   if (out_displacement) {
-      *out_displacement = frame_displacement;
-   }
 }
 
 player createPlayer(float x, float y)
@@ -744,6 +786,7 @@ void tickPlayer(player *p)
    v2 frame_displacement;
    getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
    p->position = p->position + frame_displacement;
+   setCameraFocus(&p->position);
 }
 
 void drawPlayer(player *p)
@@ -751,13 +794,6 @@ void drawPlayer(player *p)
    SDL_SetRenderDrawColor(ren, 255, 255, 100, 255);
    fillRect(ren, getPlayerBounds(p));
 }
-
-#define field_w 320
-#define field_h 240
-#define field_w_tiles field_w/tile_size
-#define field_h_tiles field_h/tile_size
-#define start_w 640
-#define start_h 480
 
 void loadLevel(const char * fname)
 {
@@ -767,11 +803,125 @@ void loadLevel(const char * fname)
       unsigned int size = SDL_RWsize(rw);
       char * fileblock = (char*)malloc(size);
       SDL_RWread(rw, fileblock, 1, size);
+      SDL_RWclose(rw);
       int fp = 0;
+
+      int tiles_w;
+      int tiles_h;
+      int screens_w;
+      int screens_h;
+
       while(isspace(fileblock[fp])) {
          fp++;
       }
 
+      tiles_w = atoi(fileblock + fp);
+      while(!isspace(fileblock[fp])) {
+         fp++;
+      }
+      while(isspace(fileblock[fp])) {
+         fp++;
+      }
+
+      tiles_h = atoi(fileblock + fp);
+      while(!isspace(fileblock[fp])) {
+         fp++;
+      }
+      while(isspace(fileblock[fp])) {
+         fp++;
+      }
+
+      screens_w = atoi(fileblock + fp);
+      while(!isspace(fileblock[fp])) {
+         fp++;
+      }
+      while(isspace(fileblock[fp])) {
+         fp++;
+      }
+
+      screens_h = atoi(fileblock + fp);
+      while(!isspace(fileblock[fp])) {
+         fp++;
+      }
+      while(isspace(fileblock[fp])) {
+         fp++;
+      }
+
+      camera.bounds.x = 0;
+      camera.bounds.y = 0;
+      camera.bounds.w = (screens_w - 1) * field_w;
+      camera.bounds.h = (screens_h - 1) * field_h;
+
+      int tile_xc = field_w_tiles / tiles_w;
+      int tile_yc = field_h_tiles / tiles_h;
+      int rtw = tile_xc * tile_size;
+      int rth = tile_yc * tile_size;
+      int pitch = tiles_w * screens_w;
+      int maxh = tiles_h * screens_h;
+      int tilecount = pitch * maxh;
+      int i = 0;
+      char *block = (char*)malloc(tilecount);
+      while (fp < size) {
+         char c = fileblock[fp];
+         if (!isspace(c)) {
+            block[i++] = c;
+         }
+         fp++;
+      }
+      free(fileblock);
+      i = 0;
+      while (i < tilecount) {
+         switch(block[i]) {
+            case '@':
+               {
+                  int x = (i % pitch) * rtw + (0.5*rtw -7);
+                  int y = (i / pitch) * rth + (0.5*rth -7);
+                  p1 = createPlayer(x, y);
+               } break;
+            case '#':
+               {
+                  int rx = i % pitch;
+                  int ry = i / pitch;
+                  int rw = 1;
+                  int rh = 1;
+                  while (rx + rw < pitch) {
+                     char ex = block[rx + rw + ry * pitch];
+                     if (ex == '#') {
+                        rw += 1;
+                     } else {
+                        break;
+                     }
+                  }
+                  printf("width %d\n", rw);
+                  while (ry + rh < maxh) {
+                     int expand = 1;
+                     for (int x = rx; x < rx + rw; x++) {
+                        char ex = block[x + (ry + rh)*pitch];
+                        if (ex != '#') {
+                           expand = 0;
+                           break;
+                        }
+                     }
+                     if (expand) {
+                        rh += 1;
+                     } else {
+                        break;
+                     }
+                  }
+                  printf("height %d\n", rh);
+                  for (int y = ry; y < ry + rh; y++) {
+                     for (int x = rx; x < rx + rw; x++) {
+                        block[x + y*pitch] = ' ';
+                     }
+                  }
+                  createTileAlignedWall(rx * tile_xc, ry * tile_yc, rw * tile_xc, rh * tile_yc);
+               } break;
+            default:
+               break;
+         }
+         i++;
+      }
+      free(block);
    }
 }
 
@@ -797,6 +947,7 @@ int main(int argc, char ** argv)
 
    testsprite st = createTestSprite(10, 10, 255, 255, 0);
 
+#if 0
    p1 = createPlayer(100, field_h/2);
 
 #if 0
@@ -807,6 +958,7 @@ int main(int argc, char ** argv)
    createTileAlignedWall(0, 0, field_w_tiles, 1);
    createTileAlignedWall(field_w_tiles - 1, 0, 1, field_h_tiles);
    createTileAlignedWall(0, 0, 1, field_h_tiles);
+#endif
    loadLevel("testlevel.txt");
 
    float t;
