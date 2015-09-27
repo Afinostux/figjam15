@@ -47,6 +47,9 @@ int frame;
 
 struct {
    SDL_Texture *saber;
+   SDL_Texture *robots;
+   SDL_Texture *wall;
+   SDL_Texture *stone;
 } tex;
 
 SDL_Texture* loadTexture(const char* file)
@@ -459,6 +462,12 @@ void setCameraFocus(float x, float y)
    setCameraFocus(&r);
 }
 
+int rectOnScreen(rect *r)
+{
+   return (r->x + r->w > camera.position.x && r->y + r->h > camera.position.y &&
+         r->x < camera.position.x + field_w && r->y < camera.position.x + field_h);
+}
+
 struct ladder {
    rect bounds;
 };
@@ -622,7 +631,7 @@ void debugDrawWalls(SDL_Renderer *ren)
    for (int i = 0; i < countof(wall); i++) {
       wall *w = tc_at(wall, i);
       if (w->active) {
-         fillRect(ren, &w->bounds);
+         drawRect(ren, &w->bounds);
       }
    }
 }
@@ -899,6 +908,19 @@ struct p_shot {
 
 tc_create(p_shot, pshot, 3);
 
+rect* getPshotBounds(p_shot *p)
+{
+   if (p->last_bounds_frame != frame) {
+      float width = 4;
+      float height = 4;
+      p->worldbounds.x = p->position.x - 0.5*width;
+      p->worldbounds.y = p->position.y - 0.5*height;
+      p->worldbounds.w = width;
+      p->worldbounds.h = height;
+   }
+   return &p->worldbounds;
+}
+
 void firePshot(float x, float y, float hspeed)
 {
    p_shot *shot = tc_new(pshot);
@@ -937,6 +959,17 @@ void drawPshots()
       shot->position = shot->velocity + shot->position;
       drawAspriteFrame(&shot->spr, shot->position.x + ofs_x, shot->position.y + ofs_y, 3, (shot->velocity.x < 0.f));
    }
+}
+
+p_shot* clipWithPshots(rect *r)
+{
+   for (int i = 0; i < countof(pshot); i++) {
+      p_shot *shot = tc_at(pshot, i); 
+      if (rectsOverlap(r, getPshotBounds(shot))) {
+         return shot;
+      }
+   }
+   return 0;
 }
 
 struct player {
@@ -1051,7 +1084,7 @@ void tickPlayer(player *p)
       getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
       p->position = p->position + frame_displacement;
       if (!p->accept_ladder) {
-         p->accept_ladder = (con.up->pressed || con.down->pressed);
+         p->accept_ladder = (con.up->pressed || con.down->pressed) || (con.up->held && con.jump->pressed);
       } else {
          if (con.up->released || con.down->released) {
             p->accept_ladder = 0;
@@ -1097,6 +1130,216 @@ void drawPlayer(player *p)
    }
 }
 
+struct boulderboss {
+   wall *blocker;
+   asprite spr;
+   int hitpoints;
+};
+
+tc_create(boulderboss, boulder, 1);
+
+rect* getBoulderBounds(boulderboss *bb)
+{
+   return (&bb->blocker->bounds);
+}
+
+void createBoulder(float x, float y)
+{
+   boulderboss *bb = tc_new(boulder);
+   if (bb) {
+      createWall(x, y + 32, 64, 32);
+      bb->blocker = tc_back(wall);
+      bb->hitpoints = 20;
+      bb->spr = createAsprite(tex.stone, 64, 64);
+   }
+}
+
+struct dozermob {
+   asprite spr;
+   int hitpoints;
+   v2 position;
+   v2 velocity;
+   float frame;
+   int flip;
+   int flipping;
+   int state_timer;
+   int active;
+};
+
+tc_create(dozermob, dozer, 16);
+
+void createDozer(float x, float y, int flip)
+{
+   dozermob *dz = tc_new(dozer);
+   if (dz) {
+      dozermob blank = {};
+      *dz = blank;
+      dz->spr = createAsprite(tex.robots, 16, 16);
+      dz->position = makev2(x, y);
+      dz->velocity = makev2(0, 0);
+      dz->flip = flip; 
+      dz->hitpoints = 2;
+      dz->flipping = 0;
+   }
+}
+
+struct bulletmob {
+   asprite spr;
+   int hitpoints;
+   v2 position;
+   float altitude;
+   float frame;
+   v2 velocity;
+   int flip;
+   int flipping;
+   int active;
+};
+
+tc_create(bulletmob, bullet, 16);
+
+void createBulletMob(float x, float y, int flip)
+{
+   bulletmob * b = tc_new(bullet);
+   if (b) {
+      bulletmob blank = {};
+      *b = blank;
+      b->spr = createAsprite(tex.robots, 16, 16);
+      b->hitpoints = 2;
+      b->position = makev2(x, y);
+      b->velocity = makev2(0, 0);
+      b->flip = flip;
+      b->altitude = y;
+      b->velocity.y = 0.5;
+   }
+};
+
+void tickEnemies()
+{
+   for (int i = 0; i < countof(boulder); ) {
+      boulderboss *bb = tc_at(boulder, i);
+      p_shot *s = clipWithPshots(getBoulderBounds(bb));
+      if (s) {
+         s->position.x = -1000;
+         bb->hitpoints--;
+         if (bb->hitpoints < 1) {
+            bb->blocker->active = 0;
+            tc_erase(boulder, i);
+            continue;
+         }
+      }
+      i++;
+   }
+   for (int i = 0; i < countof(dozer); ) {
+      dozermob *dz = tc_at(dozer, i);
+      rect dozerbounds = makeRect(dz->position.x - 4, dz->position.y - 6, 8, 12);
+      dz->active = rectOnScreen(&dozerbounds);
+      if (dz->active) {
+         if (dz->flipping) {
+            dz->state_timer -= 1;
+            if (dz->state_timer < 1) {
+               dz->flipping = 0;
+               dz->flip = !dz->flip;
+            }
+            dz->velocity.x = fapproach(dz->velocity.x, 0, 0.1);
+            v2 displacement;
+            getMotionWalled(&dozerbounds, &dz->velocity, &dz->velocity, &displacement);
+            dz->position = dz->position + displacement;
+         } else {
+            rect edgesensor;
+            if (dz->flip) {
+               dz->velocity.x = fapproach(dz->velocity.x, -1, 0.1);
+               edgesensor = makeRect(dz->position.x - 2 - 16, dz->position.y, 4, 9);
+            } else {
+               dz->velocity.x = fapproach(dz->velocity.x, 1, 0.1);
+               edgesensor = makeRect(dz->position.x - 2 + 16, dz->position.y, 4, 9);
+            }
+            v2 displacement;
+            getMotionWalled(&dozerbounds, &dz->velocity, &dz->velocity, &displacement);
+            dz->position = dz->position + displacement;
+            if (fabs(displacement.x) <= PHYS_EPSILON || !rectIntersectsWalls(&edgesensor)) {
+               dz->state_timer = 50;
+               dz->flipping = 1;
+            }
+         }
+      }
+      i++;
+   }
+   for (int i = 0; i < countof(bullet); ) {
+      bulletmob *b = tc_at(bullet, i);
+      rect bulletbounds = makeRect(b->position.x - 4, b->position.y - 4, 8, 8);
+      b->active = rectOnScreen(&bulletbounds);
+      if (b->active) {
+         if (b->flipping) {
+            b->velocity.x = fapproach(b->velocity.x, 0, 0.04);
+            if (b->velocity.x == 0.f) {
+               b->flipping = 0;
+               b->flip = !b->flip;
+            }
+         } else {
+            rect bulletsensor = bulletbounds;
+            if (b->flip) {
+               b->velocity.x = fapproach(b->velocity.x, -2, 0.01);
+               bulletsensor.x -= 64;
+            } else {
+               b->velocity.x = fapproach(b->velocity.x, 2, 0.01);
+               bulletsensor.x += 64;
+            }
+            if (rectIntersectsWalls(&bulletsensor)) {
+               b->flipping = 1;
+            }
+         }
+         if (b->position.y < b->altitude) {
+            b->velocity.y += 0.01;
+         } else {
+            b->velocity.y -= 0.01;
+         }
+         v2 displacement;
+         getMotionWalled(&bulletbounds, &b->velocity, &b->velocity, &displacement);
+         b->position = b->position + displacement;
+      }
+      i++;
+   }
+}
+
+void drawEnemies()
+{
+   for (int i = 0; i < countof(boulder); i++) {
+      boulderboss *bb = tc_at(boulder, i);
+      drawAspriteFrame(&bb->spr, bb->blocker->bounds.x, bb->blocker->bounds.y - 32, 0, 0);
+   }
+   for (int i = 0; i < countof(dozer); i++) {
+      dozermob *dz = tc_at(dozer, i);
+      if (!dz->active) {
+         continue;
+      }
+      if (!dz->flipping) {
+         dz->frame += 0.1;
+         drawAnimatingAsprite(&dz->spr, dz->position.x - 8, dz->position.y - 8, 8, 2, &dz->frame, dz->flip);
+      } else {
+         drawAspriteFrame(&dz->spr, dz->position.x - 8, dz->position.y - 8, 10, dz->flip);
+      }
+   }
+   for (int i = 0; i < countof(bullet); i++) {
+      bulletmob *b = tc_at(bullet, i);
+      if (!b->active) {
+         continue;
+      }
+      if (!b->flipping) {
+         b->frame += 0.20;
+         drawAnimatingAsprite(&b->spr, b->position.x - 8, b->position.y - 8, 4, 3, &b->frame, b->flip);
+      } else {
+         drawAspriteFrame(&b->spr, b->position.x - 8, b->position.y - 8, 7, b->flip);
+      }
+   }
+}
+
+void clearEnemies()
+{
+   countof(boulder) = 0;
+   countof(dozer) = 0;
+   countof(bullet) = 0;
+}
+
 void loadLevel(const char * fname, int connection)
 {
    SDL_RWops *rw = SDL_RWFromFile(fname, "r");
@@ -1104,6 +1347,7 @@ void loadLevel(const char * fname, int connection)
       int debug = 5;
    }
    if (rw) {
+      clearEnemies();
       clearWalls();
       room.connection_count = 0;
       unsigned int size = SDL_RWsize(rw);
@@ -1222,6 +1466,28 @@ void loadLevel(const char * fname, int connection)
                      p1 = createPlayer(x, y);
                   }
                } break;
+            case 'B':
+            case 'b':
+               {
+                  printf("bullet\n");
+                  int x = (i % pitch) * tile_xc;
+                  int y = (i / pitch) * tile_yc;
+                  createBulletMob((x + 1) * tile_size, (y + 1) * tile_size, block[i] == 'b');
+               }break;
+            case 'D':
+            case 'd':
+               {
+                  printf("dozer\n");
+                  int x = (i % pitch) * tile_xc;
+                  int y = (i / pitch) * tile_yc;
+                  createDozer((x + 1) * tile_size, (y + 1) * tile_size, block[i] == 'd');
+               }break;
+            case 'O':
+               {
+                  int x = (i % pitch) * tile_xc;
+                  int y = (i / pitch) * tile_yc;
+                  createBoulder((x) * tile_size, (y) * tile_size);
+               }break;
             case 'l':
                {
                   int x = i % pitch;
@@ -1400,6 +1666,9 @@ int main(int argc, char ** argv)
    reproject_screen(start_w, start_h);
 
    tex.saber = loadTexture("saber.gif");
+   tex.robots = loadTexture("robots.gif");
+   tex.wall = loadTexture("stones.gif");
+   tex.stone = loadTexture("boulder.gif");
 
    testsprite st = createTestSprite(10, 10, 255, 255, 0);
 
@@ -1462,11 +1731,13 @@ int main(int argc, char ** argv)
 
       tickPlayer(&p1);
       stepPshots();
+      tickEnemies();
 
 
       SDL_SetRenderDrawColor(ren, 0, 255, 255, 255);
       debugDrawWalls(ren);
       drawLadders();
+      drawEnemies();
       drawPlayer(&p1);
       drawPshots();
       //drawConnections();
