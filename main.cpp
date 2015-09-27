@@ -1235,6 +1235,7 @@ struct saucermob {
    v2 seek_vel;
    int state_timer;
    int active;
+   int hitpoints;
    float frame;
 };
 
@@ -1248,6 +1249,7 @@ void createSaucerMob(float x, float y)
       *s = blank;
       s->spr = createAsprite(tex.robots, 16, 16);
       s->position = makev2(x, y);
+      s->hitpoints = 4;
    }
 }
 
@@ -1257,6 +1259,8 @@ struct spidermob {
    int flip;
    int shot_timer;
    int active;
+   int hitpoints;
+   float frame;
 };
 
 tc_create(spidermob, spider, 16);
@@ -1288,6 +1292,7 @@ void createSpiderMob(float x, float y, int flip)
       sp->spr = createAsprite(tex.robots, 16, 16);
       sp->position = makev2(x, y);
       sp->flip = flip;
+      sp->hitpoints = 3;
    }
 }
 
@@ -1309,6 +1314,10 @@ void tickEnemies()
    }
    for (int i = 0; i < countof(dozer); ) {
       dozermob *dz = tc_at(dozer, i);
+      if (dz->hitpoints < 1) {
+         tc_erase(dozer, i);
+         continue;
+      }
       rect dozerbounds = makeRect(dz->position.x - 4, dz->position.y - 6, 8, 12);
       dz->active = rectOnScreen(&dozerbounds);
       if (dz->active) {
@@ -1339,11 +1348,28 @@ void tickEnemies()
                dz->flipping = 1;
             }
          }
+         p_shot *bullet = clipWithPshots(&dozerbounds);
+         if (bullet) {
+            bullet->position.x = -1000;
+            if (dz->flip) {
+               if (bullet->velocity.x < 0) {
+                  dz->hitpoints -= 1;
+               }
+            } else {
+               if (bullet->velocity.x > 0) {
+                  dz->hitpoints -= 1;
+               }
+            }
+         }
       }
       i++;
    }
    for (int i = 0; i < countof(bullet); ) {
       bulletmob *b = tc_at(bullet, i);
+      if (b->hitpoints < 1) {
+         tc_erase(bullet, i);
+         continue;
+      }
       rect bulletbounds = makeRect(b->position.x - 4, b->position.y - 4, 8, 8);
       b->active = rectOnScreen(&bulletbounds);
       if (b->active) {
@@ -1374,11 +1400,20 @@ void tickEnemies()
          v2 displacement;
          getMotionWalled(&bulletbounds, &b->velocity, &b->velocity, &displacement);
          b->position = b->position + displacement;
+         p_shot *bullet = clipWithPshots(&bulletbounds);
+         if (bullet) {
+            bullet->position.x = -1000;
+            b->hitpoints -= 1;
+         }
       }
       i++;
    }
    for (int i = 0; i < countof(saucer); ) {
       saucermob *s = tc_at(saucer, i);
+      if (s->hitpoints < 1) {
+         tc_erase(saucer, i);
+         continue;
+      }
       rect saucerbounds = makeRect(s->position.x - 6, s->position.y - 4, 12, 8);
       s->active = rectOnScreen(&saucerbounds);
       if (s->active) {
@@ -1391,12 +1426,18 @@ void tickEnemies()
          } else {
             s->state_timer = 0;
          }
+         p_shot *bullet = clipWithPshots(&saucerbounds);
+         if (bullet) {
+            bullet->position.x = -1000;
+            s->hitpoints -= 1;
+         }
       }
       i++;
    }
    for (int i = 0; i < countof(slaser); ) {
       slaser *sl = tc_at(slaser, i);
       rect laserbounds = makeRect(sl->position.x - 6, sl->position.y - 2, 12, 4);
+      sl->position.x += sl->hspeed;
       if (!rectInRoom(&laserbounds)) {
          tc_erase(slaser, i);
          continue;
@@ -1405,9 +1446,49 @@ void tickEnemies()
    }
    for (int i = 0; i < countof(spider); ) {
       spidermob *sp = tc_at(spider, i);
+      if (sp->hitpoints < 1) {
+         tc_erase(spider, i);
+         continue;
+      }
       rect spiderbounds = makeRect(sp->position.x - 6, sp->position.y - 6, 12, 12);
       sp->active = rectOnScreen(&spiderbounds);
       if (sp->active) {
+         if (sp->shot_timer > 0) {
+            sp->shot_timer -= 1;
+         } else {
+            rect edgesensor;
+            rect playersensor = makeRect(sp->position.x, sp->position.y, 128, 4);
+            v2 fakevelocity;
+            fakevelocity.y = 0;
+            if (sp->flip) {
+               edgesensor = makeRect(sp->position.x - 2 - 16, sp->position.y, 4, 12);
+               playersensor.x -= 128;
+               fakevelocity.x = -0.15;
+            } else {
+               edgesensor = makeRect(sp->position.x - 2 + 16, sp->position.y, 4, 12);
+               fakevelocity.x = 0.15;
+            }
+            v2 displacement;
+            getMotionWalled(&spiderbounds, &fakevelocity, 0, &displacement);
+            sp->position = sp->position + displacement;
+            if (rectsOverlap(&playersensor, getPlayerBounds(&p1))) {
+               sp->shot_timer = 50;
+               if (sp->flip) {
+                  fireSmallLaser(sp->position.x, sp->position.y, -4);
+               } else {
+                  fireSmallLaser(sp->position.x, sp->position.y,  4);
+               }
+            } else {
+               if (fabs(displacement.x) <= PHYS_EPSILON || !rectIntersectsWalls(&edgesensor)) {
+                  sp->flip = !sp->flip;
+               }
+            }
+         }
+         p_shot *bullet = clipWithPshots(&spiderbounds);
+         if (bullet) {
+            bullet->position.x = -1000;
+            sp->hitpoints -= 1;
+         }
       }
       i++;
    }
@@ -1460,6 +1541,16 @@ void drawEnemies()
       if (!sp->active) {
          continue;
       }
+      if (sp->shot_timer) {
+         if (sp->shot_timer > 40) {
+            drawAspriteFrame(&sp->spr, sp->position.x - 8, sp->position.y - 8, 15, sp->flip);
+         } else {
+            drawAspriteFrame(&sp->spr, sp->position.x - 8, sp->position.y - 8, 12, sp->flip);
+         }
+      } else {
+         sp->frame += 0.05;
+         drawAnimatingAsprite(&sp->spr, sp->position.x - 8, sp->position.y - 8, 12, 3, &sp->frame, sp->flip);
+      }
    }
 }
 
@@ -1469,6 +1560,8 @@ void clearEnemies()
    countof(dozer) = 0;
    countof(bullet) = 0;
    countof(saucer) = 0;
+   countof(slaser) = 0;
+   countof(spider) = 0;
 }
 
 void loadLevel(const char * fname, int connection)
@@ -1619,6 +1712,14 @@ void loadLevel(const char * fname, int connection)
                   int x = (i % pitch) * tile_xc;
                   int y = (i / pitch) * tile_yc;
                   createDozer((x + 1) * tile_size, (y + 1) * tile_size, block[i] == 'd');
+               }break;
+            case 'P':
+            case 'p':
+               {
+                  printf("spider\n");
+                  int x = (i % pitch) * tile_xc;
+                  int y = (i / pitch) * tile_yc;
+                  createSpiderMob((x + 1) * tile_size, (y + 1) * tile_size, block[i] == 'p');
                }break;
             case 'O':
                {
