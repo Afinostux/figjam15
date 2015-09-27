@@ -9,7 +9,8 @@
 #include <SDL2/SDL_mixer.h>
 #include <SDL2/SDL_image.h>
 
-#define PHYS_EPSILON sqrt(FLT_EPSILON) * 10
+// NOTE(afox): what the hell man
+#define PHYS_EPSILON sqrt(FLT_EPSILON) * 100
 
 SDL_Window *win;
 SDL_Renderer *ren;
@@ -231,6 +232,11 @@ struct {
    v2 transition_offset;
    int connection_count;
 } room;
+
+int rectInRoom(rect *r)
+{
+   return (r->x <= room.bounds.w && r->y <= room.bounds.h && r->x + r->w >= 0 && r->y + r->h >= 0);
+}
 
 void setRoomName(const char* nname)
 {
@@ -465,7 +471,7 @@ void setCameraFocus(float x, float y)
 int rectOnScreen(rect *r)
 {
    return (r->x + r->w > camera.position.x && r->y + r->h > camera.position.y &&
-         r->x < camera.position.x + field_w && r->y < camera.position.x + field_h);
+         r->x < camera.position.x + field_w && r->y < camera.position.y + field_h);
 }
 
 struct ladder {
@@ -534,11 +540,18 @@ int rectIntersectsWalls(rect *mr)
    return 0;
 }
 
+int rectAgainstWall(rect *mr)
+{
+   rect b = expandRect(mr, -0.5);
+   b.x -= 1;
+   b.w += 2;
+   return rectIntersectsWalls(&b);
+}
+
 int rectOnGround(rect *mr)
 {
    rect b = expandRect(mr, -0.5);
    b.y += 1;
-   drawRect(ren, &b);
    return rectIntersectsWalls(&b);
 }
 
@@ -671,6 +684,9 @@ void drawAnimatingAsprite(asprite *sp, float x, float y, int frame_start, int fr
       *time = (barrier - frame_start) - 0.01;
    }
    int frame = frame_start + floor(*time);
+   if (frame > barrier) {
+      frame = frame_start;
+   }
    SDL_Rect src;
    SDL_Rect dest;
    src.x = (frame % sp->pitch) * sp->w;
@@ -1209,9 +1225,71 @@ void createBulletMob(float x, float y, int flip)
       b->velocity = makev2(0, 0);
       b->flip = flip;
       b->altitude = y;
-      b->velocity.y = 0.5;
+      b->velocity.y = 0.6;
    }
 };
+
+struct saucermob {
+   asprite spr;
+   v2 position;
+   v2 seek_vel;
+   int state_timer;
+   int active;
+   float frame;
+};
+
+tc_create(saucermob, saucer, 16);
+
+void createSaucerMob(float x, float y)
+{
+   saucermob *s = tc_new(saucer);
+   if (s) {
+      saucermob blank = {};
+      *s = blank;
+      s->spr = createAsprite(tex.robots, 16, 16);
+      s->position = makev2(x, y);
+   }
+}
+
+struct spidermob {
+   asprite spr;
+   v2 position;
+   int flip;
+   int shot_timer;
+   int active;
+};
+
+tc_create(spidermob, spider, 16);
+
+struct slaser {
+   asprite spr;
+   v2 position;
+   float hspeed;
+};
+
+tc_create(slaser, slaser, 32);
+
+void fireSmallLaser(float x, float y, float hspeed)
+{
+   slaser *sl = tc_new(slaser);
+   if (sl) {
+      sl->spr = createAsprite(tex.robots, 16, 16);
+      sl->position = makev2(x, y);
+      sl->hspeed = hspeed;
+   }
+}
+
+void createSpiderMob(float x, float y, int flip)
+{
+   spidermob *sp = tc_new(spider);
+   if (sp) {
+      spidermob blank = {};
+      *sp = blank;
+      sp->spr = createAsprite(tex.robots, 16, 16);
+      sp->position = makev2(x, y);
+      sp->flip = flip;
+   }
+}
 
 void tickEnemies()
 {
@@ -1299,6 +1377,40 @@ void tickEnemies()
       }
       i++;
    }
+   for (int i = 0; i < countof(saucer); ) {
+      saucermob *s = tc_at(saucer, i);
+      rect saucerbounds = makeRect(s->position.x - 6, s->position.y - 4, 12, 8);
+      s->active = rectOnScreen(&saucerbounds);
+      if (s->active) {
+         s->state_timer += 1;
+         if (s->state_timer < 75) {
+            s->seek_vel = p1.position - s->position;
+            s->seek_vel = normalizev2(&s->seek_vel);
+         } else if (s->state_timer < 150) {
+            s->position = s->position + s->seek_vel;
+         } else {
+            s->state_timer = 0;
+         }
+      }
+      i++;
+   }
+   for (int i = 0; i < countof(slaser); ) {
+      slaser *sl = tc_at(slaser, i);
+      rect laserbounds = makeRect(sl->position.x - 6, sl->position.y - 2, 12, 4);
+      if (!rectInRoom(&laserbounds)) {
+         tc_erase(slaser, i);
+         continue;
+      }
+      i++;
+   }
+   for (int i = 0; i < countof(spider); ) {
+      spidermob *sp = tc_at(spider, i);
+      rect spiderbounds = makeRect(sp->position.x - 6, sp->position.y - 6, 12, 12);
+      sp->active = rectOnScreen(&spiderbounds);
+      if (sp->active) {
+      }
+      i++;
+   }
 }
 
 void drawEnemies()
@@ -1331,6 +1443,24 @@ void drawEnemies()
          drawAspriteFrame(&b->spr, b->position.x - 8, b->position.y - 8, 7, b->flip);
       }
    }
+   for (int i = 0; i < countof(saucer); i++) {
+      saucermob *s = tc_at(saucer, i);
+      if (!s->active) {
+         continue;
+      }
+      s->frame += 0.10;
+      drawAnimatingAsprite(&s->spr, s->position.x - 8, s->position.y - 8, 0, 4, &s->frame, 0);
+   }
+   for (int i = 0; i < countof(slaser); i++) {
+      slaser *sl = tc_at(slaser, i);
+      drawAspriteFrame(&sl->spr, sl->position.x - 8, sl->position.y - 8, 11, sl->hspeed < 0.f);
+   }
+   for (int i = 0; i < countof(spider); i++) {
+      spidermob *sp = tc_at(spider, i);
+      if (!sp->active) {
+         continue;
+      }
+   }
 }
 
 void clearEnemies()
@@ -1338,6 +1468,7 @@ void clearEnemies()
    countof(boulder) = 0;
    countof(dozer) = 0;
    countof(bullet) = 0;
+   countof(saucer) = 0;
 }
 
 void loadLevel(const char * fname, int connection)
@@ -1466,6 +1597,13 @@ void loadLevel(const char * fname, int connection)
                      p1 = createPlayer(x, y);
                   }
                } break;
+            case 's':
+               {
+                  printf("saucer\n");
+                  int x = (i % pitch) * tile_xc;
+                  int y = (i / pitch) * tile_yc;
+                  createSaucerMob((x + 1) * tile_size, (y + 1) * tile_size);
+               }break;
             case 'B':
             case 'b':
                {
