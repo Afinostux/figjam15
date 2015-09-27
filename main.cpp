@@ -46,6 +46,16 @@ int frame;
 #define start_w 640
 #define start_h 480
 
+int min(int a, int b)
+{
+   return (a < b)?a:b;
+}
+
+int max(int a, int b)
+{
+   return (a > b)?a:b;
+}
+
 struct {
    SDL_Texture *saber;
    SDL_Texture *robots;
@@ -914,6 +924,32 @@ struct {
    control *fire;
 } con;
 
+struct effect {
+   asprite spr;
+   v2 offset;
+   v2 position;
+   v2 velocity;
+   int timer;
+   int timer_start;
+   int frame_start;
+   int frame_end;
+};
+
+tc_create(effect, effect, 32);
+
+void createEffect(SDL_Texture *t, v2 position, v2 velocity, int w, int h, int framestart, int frameend, int time)
+{
+   effect *e = tc_new(effect);
+   if (e) {
+      e->spr = createAsprite(t, w, h);
+      e->offset = makev2(-w/2, -h/2);
+      e->velocity = velocity;
+      e->timer_start = e->timer = time;
+      e->frame_start = framestart;
+      e->frame_end = frameend;
+   }
+}
+
 struct p_shot {
    rect worldbounds;
    asprite spr;
@@ -1002,6 +1038,8 @@ struct player {
    int onladder;
    int accept_ladder;
    int last_bounds_frame;
+   int hitpoints;
+   int hurt_timer;
 } p1;
 
 rect * getPlayerBounds(player *p)
@@ -1026,9 +1064,24 @@ player createPlayer(float x, float y)
    res.active = res.alive = 1;
    res.last_bounds_frame = frame-1;
    res.spr = createAsprite(tex.saber, 16, 16);
+   res.hitpoints = 100;
    return res;
 }
 
+void hurtPlayer(float vx, float vy, int amount)
+{
+   if (p1.hurt_timer == 0) {
+      p1.hitpoints = max(p1.hitpoints - amount, 0);
+      p1.velocity.x += vx;
+      p1.velocity.y += vy;
+      p1.hurt_timer = 200;
+      if (!rectIntersectsWalls(getPlayerBounds(&p1))) {
+         p1.onladder = 0;
+      }
+   }
+}
+
+int player_hurt_threshold = 180;
 void tickPlayer(player *p)
 {
    float player_accel = 0.1;
@@ -1037,85 +1090,100 @@ void tickPlayer(player *p)
    float player_jump = 4.5;
    float player_shot_speed = 2.5;
    int player_jump_grace = 20;
-   if (con.fire->pressed) {
-      if (con.left->held) {
-         firePshot(p->position.x, p->position.y, -player_shot_speed);
-      } else if (con.right->held) {
-         firePshot(p->position.x, p->position.y, player_shot_speed);
-      } else {
-         if (p->flip) {
-            firePshot(p->position.x, p->position.y, -player_shot_speed);
-         } else {
-            firePshot(p->position.x, p->position.y, player_shot_speed);
-         }
-      }
+   if (p->hurt_timer > 0) {
+      p->hurt_timer -= 1;
    }
-   if (p->onladder) {
-      ladder *l = getIntersectingLadder(getPlayerBounds(p));
-      if (l) {
-         p->position.x = fapproach(p->position.x, l->bounds.x + l->bounds.w * 0.5, 1);
-         if (con.up->held) {
-            p->position.y -= 1;
-         } else if (con.down->held) {
-            p->position.y += 1;
-         }
-         if (con.jump->pressed) {
-            if (!rectIntersectsWalls(getPlayerBounds(p))) {
-               p->onladder = 0;
-               p->velocity.x = 0;
-               p->velocity.y = -player_jump * 0.5;
-            }
-         }
-      } else {
-         p->onladder = 0;
-         p->velocity.x = 0;
-         p->velocity.y = 0;
-      }
-   } else {
-      rect bounds = *getPlayerBounds(p);
-      if (con.left->held) {
-         p->velocity.x = fapproach(p->velocity.x, -player_wspeed, player_accel);
-      } else if (con.right->held) {
-         p->velocity.x = fapproach(p->velocity.x, player_wspeed, player_accel);
-      } else {
+   if (p->hurt_timer > player_hurt_threshold) {
+      if (rectOnGround(getPlayerBounds(p))) {
          p->velocity.x = fapproach(p->velocity.x, 0, player_accel);
       }
-
-      if (con.jump->held && con.jump->frames < player_jump_grace) {
-         if (rectOnGround(getPlayerBounds(p))) {
-            p->velocity.y = -player_jump;
-            p->jumping = 1;
+      if (!p->onladder) {
+         p->velocity.y += player_gravity;
+         v2 frame_displacement;
+         getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
+         p->position = p->position + frame_displacement;
+      }
+   } else {
+      if (con.fire->pressed) {
+         if (con.left->held) {
+            firePshot(p->position.x, p->position.y, -player_shot_speed);
+         } else if (con.right->held) {
+            firePshot(p->position.x, p->position.y, player_shot_speed);
+         } else {
+            if (p->flip) {
+               firePshot(p->position.x, p->position.y, -player_shot_speed);
+            } else {
+               firePshot(p->position.x, p->position.y, player_shot_speed);
+            }
          }
       }
-      if (p->jumping) {
-         if (con.jump->released && p->velocity.y < 0.f) {
-            p->jumping = 0;
-            p->velocity.y *= 0.3;
-         } else if (p->velocity.y >= 0.f) {
-            p->jumping = 0;
+      if (p->onladder) {
+         ladder *l = getIntersectingLadder(getPlayerBounds(p));
+         if (l) {
+            p->position.x = fapproach(p->position.x, l->bounds.x + l->bounds.w * 0.5, 1);
+            if (con.up->held) {
+               p->position.y -= 1;
+            } else if (con.down->held) {
+               p->position.y += 1;
+            }
+            if (con.jump->pressed) {
+               if (!rectIntersectsWalls(getPlayerBounds(p))) {
+                  p->onladder = 0;
+                  p->velocity.x = 0;
+                  p->velocity.y = -player_jump * 0.5;
+               }
+            }
+         } else {
+            p->onladder = 0;
+            p->velocity.x = 0;
+            p->velocity.y = 0;
          }
-      }
-      p->velocity.y += player_gravity;
-      v2 frame_displacement;
-      getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
-      p->position = p->position + frame_displacement;
-      if (!p->accept_ladder) {
-         p->accept_ladder = (con.up->pressed || con.down->pressed) || (con.up->held && con.jump->pressed);
       } else {
-         if (con.up->released || con.down->released) {
-            p->accept_ladder = 0;
+         rect bounds = *getPlayerBounds(p);
+         if (con.left->held) {
+            p->velocity.x = fapproach(p->velocity.x, -player_wspeed, player_accel);
+         } else if (con.right->held) {
+            p->velocity.x = fapproach(p->velocity.x, player_wspeed, player_accel);
+         } else {
+            p->velocity.x = fapproach(p->velocity.x, 0, player_accel);
          }
-      }
-      if (p->accept_ladder) {
-         if (rectIntersectsLadders(getPlayerBounds(p))) {
-            p->accept_ladder = 0;
-            p->onladder = 1;
+
+         if (con.jump->held && con.jump->frames < player_jump_grace) {
+            if (rectOnGround(getPlayerBounds(p))) {
+               p->velocity.y = -player_jump;
+               p->jumping = 1;
+            }
          }
-      }
-      if (p->velocity.x > 0) {
-         p->flip = 0;
-      } else if (p->velocity.x < 0) {
-         p->flip = 1;
+         if (p->jumping) {
+            if (con.jump->released && p->velocity.y < 0.f) {
+               p->jumping = 0;
+               p->velocity.y *= 0.3;
+            } else if (p->velocity.y >= 0.f) {
+               p->jumping = 0;
+            }
+         }
+         p->velocity.y += player_gravity;
+         v2 frame_displacement;
+         getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
+         p->position = p->position + frame_displacement;
+         if (!p->accept_ladder) {
+            p->accept_ladder = (con.up->pressed || con.down->pressed) || (con.up->held && con.jump->pressed);
+         } else {
+            if (con.up->released || con.down->released) {
+               p->accept_ladder = 0;
+            }
+         }
+         if (p->accept_ladder) {
+            if (rectIntersectsLadders(getPlayerBounds(p))) {
+               p->accept_ladder = 0;
+               p->onladder = 1;
+            }
+         }
+         if (p->velocity.x > 0) {
+            p->flip = 0;
+         } else if (p->velocity.x < 0) {
+            p->flip = 1;
+         }
       }
    }
    setCameraFocus(&p->position);
@@ -1126,24 +1194,46 @@ void drawPlayer(player *p)
    SDL_SetRenderDrawColor(ren, 255, 255, 100, 255);
    float ofs_x = -8;
    float ofs_y = -9;
-   if (!p->onladder) {
-      if (fabs(p->velocity.x) > 0.1) {
-         p->frame += 0.2;
-         drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 4, 4, &p->frame, p->flip);
-      } else {
-         drawAspriteFrame(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 0, p->flip);
-      }
+   if (p->hurt_timer > player_hurt_threshold) {
+      p->frame += 0.6;
+      drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 2, 2, &p->frame, p->flip);
    } else {
-      if (con.up->held) {
-         p->frame += 0.1;
-         drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 8, 4, &p->frame, p->flip);
-      } else if (con.down->held) {
-         p->frame -= 0.1;
-         drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 8, 4, &p->frame, p->flip);
-      } else {
-         drawAspriteFrame(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 8, p->flip);
+      if (!((p->hurt_timer / 2)%2)) {
+         if (!p->onladder) {
+            if (fabs(p->velocity.x) > 0.1) {
+               p->frame += 0.2;
+               drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 4, 4, &p->frame, p->flip);
+            } else {
+               drawAspriteFrame(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 0, p->flip);
+            }
+         } else {
+            if (con.up->held) {
+               p->frame += 0.1;
+               drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 8, 4, &p->frame, p->flip);
+            } else if (con.down->held) {
+               p->frame -= 0.1;
+               drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 8, 4, &p->frame, p->flip);
+            } else {
+               drawAspriteFrame(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 8, p->flip);
+            }
+         }
       }
    }
+
+   SDL_Rect healthrect;
+   SDL_Rect healthbar;
+   healthrect.x = healthbar.x = 4;
+   healthrect.y = healthbar.y = 4;
+   healthrect.w = healthbar.w = 4;
+   healthrect.h = 100;
+   healthbar.h = p->hitpoints;
+   healthbar.y += healthrect.h - healthbar.h;
+   SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+   SDL_RenderFillRect(ren, &healthrect);
+   SDL_SetRenderDrawColor(ren, 100, 255, 100, 255);
+   SDL_RenderFillRect(ren, &healthbar);
+   SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+   SDL_RenderDrawRect(ren, &healthrect);
 }
 
 struct boulderboss {
@@ -1361,6 +1451,21 @@ void tickEnemies()
                }
             }
          }
+         if (rectsOverlap(&dozerbounds, getPlayerBounds(&p1))) {
+            if (p1.position.x > dz->position.x) {
+               if (dz->flip) {
+                  hurtPlayer(1, -1, 10);
+               } else {
+                  hurtPlayer(2, -1, 10);
+               }
+            } else {
+               if (!dz->flip) {
+                  hurtPlayer(-1, -1, 10);
+               } else {
+                  hurtPlayer(-2, -1, 10);
+               }
+            }
+         }
       }
       i++;
    }
@@ -1405,6 +1510,21 @@ void tickEnemies()
             bullet->position.x = -1000;
             b->hitpoints -= 1;
          }
+         if (rectsOverlap(&bulletbounds, getPlayerBounds(&p1))) {
+            if (p1.position.x > b->position.x) {
+               if (b->flip) {
+                  hurtPlayer(1, -1, 10);
+               } else {
+                  hurtPlayer(2, -1, 10);
+               }
+            } else {
+               if (!b->flip) {
+                  hurtPlayer(-1, -1, 10);
+               } else {
+                  hurtPlayer(-2, -1, 10);
+               }
+            }
+         }
       }
       i++;
    }
@@ -1431,12 +1551,24 @@ void tickEnemies()
             bullet->position.x = -1000;
             s->hitpoints -= 1;
          }
+         if (rectsOverlap(&saucerbounds, getPlayerBounds(&p1))) {
+            if (p1.position.x > s->position.x) {
+               hurtPlayer(1, -1, 10);
+            } else {
+               hurtPlayer(-1, -1, 10);
+            }
+         }
       }
       i++;
    }
    for (int i = 0; i < countof(slaser); ) {
       slaser *sl = tc_at(slaser, i);
       rect laserbounds = makeRect(sl->position.x - 6, sl->position.y - 2, 12, 4);
+      if (rectsOverlap(&laserbounds, getPlayerBounds(&p1))) {
+         hurtPlayer(sl->hspeed, -1, 20);
+         tc_erase(slaser, i);
+         continue;
+      }
       sl->position.x += sl->hspeed;
       if (!rectInRoom(&laserbounds)) {
          tc_erase(slaser, i);
@@ -1453,16 +1585,17 @@ void tickEnemies()
       rect spiderbounds = makeRect(sp->position.x - 6, sp->position.y - 6, 12, 12);
       sp->active = rectOnScreen(&spiderbounds);
       if (sp->active) {
+         int range = 100;
          if (sp->shot_timer > 0) {
             sp->shot_timer -= 1;
          } else {
             rect edgesensor;
-            rect playersensor = makeRect(sp->position.x, sp->position.y, 128, 4);
+            rect playersensor = makeRect(sp->position.x, sp->position.y, range, 4);
             v2 fakevelocity;
             fakevelocity.y = 0;
             if (sp->flip) {
                edgesensor = makeRect(sp->position.x - 2 - 16, sp->position.y, 4, 12);
-               playersensor.x -= 128;
+               playersensor.x -= range;
                fakevelocity.x = -0.15;
             } else {
                edgesensor = makeRect(sp->position.x - 2 + 16, sp->position.y, 4, 12);
@@ -1488,6 +1621,13 @@ void tickEnemies()
          if (bullet) {
             bullet->position.x = -1000;
             sp->hitpoints -= 1;
+         }
+         if (rectsOverlap(&spiderbounds, getPlayerBounds(&p1))) {
+            if (p1.position.x > sp->position.x) {
+               hurtPlayer(1, -1, 10);
+            } else {
+               hurtPlayer(-1, -1, 10);
+            }
          }
       }
       i++;
@@ -1562,6 +1702,83 @@ void clearEnemies()
    countof(saucer) = 0;
    countof(slaser) = 0;
    countof(spider) = 0;
+}
+
+struct {
+   char *data;
+   SDL_Texture *tex;
+   int width, height;
+   int size;
+   int tex_pitch;
+   int tex_samplecount;
+} tilemap;
+
+void initTilemap(int screens_w, int screens_h, SDL_Texture *tex)
+{
+   free(tilemap.data);
+
+   tilemap.width  = screens_w * field_w_tiles;
+   tilemap.height = screens_h * field_h_tiles;
+   tilemap.size = tilemap.width * tilemap.height;
+   tilemap.data = (char*)calloc(tilemap.size, sizeof(char));
+
+   srand(screens_w + screens_h);
+   int tw, th;
+   tilemap.tex = tex;
+   SDL_QueryTexture(tex, 0, 0, &tw, &th);
+   tilemap.tex_pitch = tw / tile_size;
+   tilemap.tex_samplecount = tilemap.tex_pitch * (th / tile_size);
+}
+
+void setRandomTile(int x, int y)
+{
+   assert(x >= 0 && x < tilemap.width && y >= 0 && y < tilemap.height);
+   tilemap.data[x + y * tilemap.width] = (rand() % tilemap.tex_samplecount) + 1;
+}
+
+void setRandomRectangle(int x, int y, int w, int h)
+{
+   int xs = max(x, 0);
+   int ys = max(y, 0);
+   int xm = min(tilemap.width,  x + w);
+   int ym = min(tilemap.height, y + h);
+   for (y = ys; y < ym; y++) {
+      for (x = xs; x < xm; x++) {
+         setRandomTile(x, y);
+      }
+   }
+}
+
+void drawTilemap()
+{
+   if (tilemap.data) {
+      int ofsx = floor(camera.position.x);
+      int ofsy = floor(camera.position.y);
+      int tstartx = ofsx / tile_size;
+      int tstarty = ofsy / tile_size;
+      int xs = max(tstartx, 0);
+      int ys = max(tstarty, 0);
+      int xm = min(tilemap.width,  tstartx + field_w);
+      int ym = min(tilemap.height, tstarty + field_h);
+
+      SDL_Rect src;
+      SDL_Rect dst;
+      src.w = dst.w = src.h = dst.h = tile_size;
+
+      for (int y = ys; y < ym; y++) {
+         for (int x = xs; x < xm; x++) {
+            int ind = tilemap.data[x + y * tilemap.width];
+            if (ind) {
+               ind -= 1;
+               dst.x = x * tile_size - ofsx;
+               dst.y = y * tile_size - ofsy;
+               src.x = (ind % tilemap.tex_pitch) * tile_size;
+               src.y = (ind / tilemap.tex_pitch) * tile_size;
+               SDL_RenderCopy(ren, tilemap.tex, &src, &dst);
+            }
+         }
+      }
+   }
 }
 
 void loadLevel(const char * fname, int connection)
@@ -1651,6 +1868,8 @@ void loadLevel(const char * fname, int connection)
          }
       }
 
+      initTilemap(screens_w, screens_h, tex.wall);
+
       camera.bounds.x = 0;
       camera.bounds.y = 0;
       camera.bounds.w = (screens_w - 1) * field_w;
@@ -1684,7 +1903,7 @@ void loadLevel(const char * fname, int connection)
          switch(block[i]) {
             case '@':
                {
-                  if (!p1.active) {
+                  if (!connection) {
                      int x = (i % pitch) * rtw + (0.5*rtw -7);
                      int y = (i / pitch) * rth + (0.5*rth -7);
                      p1 = createPlayer(x, y);
@@ -1692,7 +1911,6 @@ void loadLevel(const char * fname, int connection)
                } break;
             case 's':
                {
-                  printf("saucer\n");
                   int x = (i % pitch) * tile_xc;
                   int y = (i / pitch) * tile_yc;
                   createSaucerMob((x + 1) * tile_size, (y + 1) * tile_size);
@@ -1700,7 +1918,6 @@ void loadLevel(const char * fname, int connection)
             case 'B':
             case 'b':
                {
-                  printf("bullet\n");
                   int x = (i % pitch) * tile_xc;
                   int y = (i / pitch) * tile_yc;
                   createBulletMob((x + 1) * tile_size, (y + 1) * tile_size, block[i] == 'b');
@@ -1708,7 +1925,6 @@ void loadLevel(const char * fname, int connection)
             case 'D':
             case 'd':
                {
-                  printf("dozer\n");
                   int x = (i % pitch) * tile_xc;
                   int y = (i / pitch) * tile_yc;
                   createDozer((x + 1) * tile_size, (y + 1) * tile_size, block[i] == 'd');
@@ -1716,7 +1932,6 @@ void loadLevel(const char * fname, int connection)
             case 'P':
             case 'p':
                {
-                  printf("spider\n");
                   int x = (i % pitch) * tile_xc;
                   int y = (i / pitch) * tile_yc;
                   createSpiderMob((x + 1) * tile_size, (y + 1) * tile_size, block[i] == 'p');
@@ -1786,6 +2001,7 @@ void loadLevel(const char * fname, int connection)
                      }
                   }
                   createTileAlignedWall(rx * tile_xc, ry * tile_yc, rw * tile_xc, rh * tile_yc);
+                  setRandomRectangle(rx * tile_xc, ry * tile_yc, rw * tile_xc, rh * tile_yc);
                   if (reverse) {
                      reverse = 0;
                      i--;
@@ -1906,7 +2122,7 @@ int main(int argc, char ** argv)
 
    tex.saber = loadTexture("saber.gif");
    tex.robots = loadTexture("robots.gif");
-   tex.wall = loadTexture("stones.gif");
+   tex.wall = loadTexture("wall.gif");
    tex.stone = loadTexture("boulder.gif");
 
    testsprite st = createTestSprite(10, 10, 255, 255, 0);
@@ -1974,7 +2190,8 @@ int main(int argc, char ** argv)
 
 
       SDL_SetRenderDrawColor(ren, 0, 255, 255, 255);
-      debugDrawWalls(ren);
+      //debugDrawWalls(ren);
+      drawTilemap();
       drawLadders();
       drawEnemies();
       drawPlayer(&p1);
