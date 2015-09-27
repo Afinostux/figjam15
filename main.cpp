@@ -7,8 +7,9 @@
 #include <float.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
+#include <SDL2/SDL_image.h>
 
-#define PHYS_EPSILON sqrt(FLT_EPSILON)
+#define PHYS_EPSILON sqrt(FLT_EPSILON) * 10
 
 SDL_Window *win;
 SDL_Renderer *ren;
@@ -35,7 +36,7 @@ int frame;
 #define tc_at_safe(lcs, ind) ((tc_inarray(lcs, ind))?tc_at(lcs, ind):0)
 #define tc_at_wrap(lcs, ind) (tc_at(lcs, (ind)%countof(lcs)))
 #define tc_back(lcs) (tc_at(lcs, (countof(lcs) - 1)))
-#define tc_erase(lcs, ind) {if (tc_inarray(lcs, ind)) { *tc_at(lcs, ind) = tc_back(lcs); countof(lcs)--;}}
+#define tc_erase(lcs, ind) {if (tc_inarray(lcs, ind)) { *tc_at(lcs, ind) = *tc_back(lcs); countof(lcs)--;}}
 
 #define field_w 320
 #define field_h 240
@@ -43,6 +44,21 @@ int frame;
 #define field_h_tiles field_h/tile_size
 #define start_w 640
 #define start_h 480
+
+struct {
+   SDL_Texture *saber;
+} tex;
+
+SDL_Texture* loadTexture(const char* file)
+{
+   SDL_Surface *lsrf = IMG_Load(file);
+   SDL_Texture *tex;
+   if (lsrf) {
+      tex = SDL_CreateTextureFromSurface(ren, lsrf);
+      SDL_FreeSurface(lsrf);
+   }
+   return tex;
+}
 
 Uint64 secondsToPCF(float seconds)
 {
@@ -606,12 +622,11 @@ void debugDrawWalls(SDL_Renderer *ren)
    for (int i = 0; i < countof(wall); i++) {
       wall *w = tc_at(wall, i);
       if (w->active) {
-         drawRect(ren, &w->bounds);
+         fillRect(ren, &w->bounds);
       }
    }
 }
 
-#if 0
 struct asprite {
    SDL_Texture *tex;
    int framecount;
@@ -621,8 +636,64 @@ struct asprite {
 
 asprite createAsprite(SDL_Texture *tex, int frame_w, int frame_h)
 {
+   asprite res;
+   res.tex = tex;
+   res.w = frame_w;
+   res.h = frame_h;
+   int texw, texh;
+   SDL_QueryTexture(tex, 0, 0, &texw, &texh);
+   res.pitch = texw / frame_w;
+   res.framecount = res.pitch * (texh / frame_h);
+   return res;
 }
-#endif
+
+void drawAnimatingAsprite(asprite *sp, float x, float y, int frame_start, int frame_count, float *time, int flip)
+{
+   int barrier;
+   if (frame_start + frame_count > sp->framecount) {
+      barrier = sp->framecount;
+   } else  {
+      barrier = frame_start + frame_count;
+   }
+   if (frame_start + ceil(*time) > barrier) {
+      *time = 0;
+   }
+   if (*time < 0.f) {
+      *time = (barrier - frame_start) - 0.01;
+   }
+   int frame = frame_start + floor(*time);
+   SDL_Rect src;
+   SDL_Rect dest;
+   src.x = (frame % sp->pitch) * sp->w;
+   src.y = (frame / sp->pitch) * sp->h;
+   dest.x = floor(x - camera.position.x);
+   dest.y = floor(y - camera.position.y);
+   src.w = dest.w = sp->w;
+   src.h = dest.h = sp->h;
+   SDL_Point ofs = {sp->w * 0.5, sp->h * 0.5};
+   if (flip) { 
+      flip = SDL_FLIP_HORIZONTAL;
+   }
+   SDL_RenderCopyEx(ren, sp->tex, &src, &dest, 0, &ofs, (SDL_RendererFlip)flip);
+}
+
+void drawAspriteFrame(asprite *sp, float x, float y, int frame, int flip)
+{
+   frame = frame % sp->framecount;
+   SDL_Rect src;
+   SDL_Rect dest;
+   src.x = (frame % sp->pitch) * sp->w;
+   src.y = (frame / sp->pitch) * sp->h;
+   dest.x = floor(x - camera.position.x);
+   dest.y = floor(y - camera.position.y);
+   src.w = dest.w = sp->w;
+   src.h = dest.h = sp->h;
+   SDL_Point ofs = {sp->w * 0.5, sp->h * 0.5};
+   if (flip) { 
+      flip = SDL_FLIP_HORIZONTAL;
+   }
+   SDL_RenderCopyEx(ren, sp->tex, &src, &dest, 0, &ofs, (SDL_RendererFlip)flip);
+}
 
 struct testsprite {
    SDL_Rect bounds;
@@ -815,27 +886,72 @@ struct {
    control *down;
    control *right;
    control *jump;
+   control *fire;
 } con;
 
 struct p_shot {
    rect worldbounds;
+   asprite spr;
    v2 position;
    v2 velocity;
-   int shot_timer;
    int last_bounds_frame;
 };
 
 tc_create(p_shot, pshot, 3);
+
+void firePshot(float x, float y, float hspeed)
+{
+   p_shot *shot = tc_new(pshot);
+   if (shot) {
+      shot->spr = createAsprite(tex.saber, 16, 16);
+      shot->position.x = x;
+      shot->position.y = y;
+      shot->velocity.y = 0;
+      shot->velocity.x = hspeed;
+      shot->last_bounds_frame = frame - 1;
+   }
+}
+
+void stepPshots()
+{
+   for (int i = 0; i < countof(pshot); i++) {
+      p_shot *shot = tc_at(pshot, i); 
+      shot->position = shot->velocity + shot->position;
+   }
+   for (int i = 0; i < countof(pshot);) {
+      p_shot *shot = tc_at(pshot, i); 
+      if (shot->position.x < camera.position.x || shot->position.x > camera.position.x + field_w) {
+         tc_erase(pshot, i);
+         continue;
+      }
+      i++;
+   }
+}
+
+void drawPshots()
+{
+   float ofs_x = -8;
+   float ofs_y = -8;
+   for (int i = 0; i < countof(pshot); i++) {
+      p_shot *shot = tc_at(pshot, i); 
+      shot->position = shot->velocity + shot->position;
+      drawAspriteFrame(&shot->spr, shot->position.x + ofs_x, shot->position.y + ofs_y, 3, (shot->velocity.x < 0.f));
+   }
+}
 
 struct player {
    v2 position;
    v2 velocity;
    rect worldbounds;
    float w, h;
+   float frame;
+   asprite spr;
    int active;
+   int flip;
    int alive;
    int jumping;
    int onladder;
+   int accept_ladder;
    int last_bounds_frame;
 } p1;
 
@@ -860,6 +976,7 @@ player createPlayer(float x, float y)
    res.h = 14;
    res.active = res.alive = 1;
    res.last_bounds_frame = frame-1;
+   res.spr = createAsprite(tex.saber, 16, 16);
    return res;
 }
 
@@ -869,7 +986,21 @@ void tickPlayer(player *p)
    float player_wspeed = 1.5;
    float player_gravity = 0.09;
    float player_jump = 4.5;
+   float player_shot_speed = 2.5;
    int player_jump_grace = 20;
+   if (con.fire->pressed) {
+      if (con.left->held) {
+         firePshot(p->position.x, p->position.y, -player_shot_speed);
+      } else if (con.right->held) {
+         firePshot(p->position.x, p->position.y, player_shot_speed);
+      } else {
+         if (p->flip) {
+            firePshot(p->position.x, p->position.y, -player_shot_speed);
+         } else {
+            firePshot(p->position.x, p->position.y, player_shot_speed);
+         }
+      }
+   }
    if (p->onladder) {
       ladder *l = getIntersectingLadder(getPlayerBounds(p));
       if (l) {
@@ -919,10 +1050,23 @@ void tickPlayer(player *p)
       v2 frame_displacement;
       getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
       p->position = p->position + frame_displacement;
-      if (con.up->pressed || con.down->pressed) {
+      if (!p->accept_ladder) {
+         p->accept_ladder = (con.up->pressed || con.down->pressed);
+      } else {
+         if (con.up->released || con.down->released) {
+            p->accept_ladder = 0;
+         }
+      }
+      if (p->accept_ladder) {
          if (rectIntersectsLadders(getPlayerBounds(p))) {
+            p->accept_ladder = 0;
             p->onladder = 1;
          }
+      }
+      if (p->velocity.x > 0) {
+         p->flip = 0;
+      } else if (p->velocity.x < 0) {
+         p->flip = 1;
       }
    }
    setCameraFocus(&p->position);
@@ -931,7 +1075,26 @@ void tickPlayer(player *p)
 void drawPlayer(player *p)
 {
    SDL_SetRenderDrawColor(ren, 255, 255, 100, 255);
-   fillRect(ren, getPlayerBounds(p));
+   float ofs_x = -8;
+   float ofs_y = -9;
+   if (!p->onladder) {
+      if (fabs(p->velocity.x) > 0.1) {
+         p->frame += 0.2;
+         drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 4, 4, &p->frame, p->flip);
+      } else {
+         drawAspriteFrame(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 0, p->flip);
+      }
+   } else {
+      if (con.up->held) {
+         p->frame += 0.1;
+         drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 8, 4, &p->frame, p->flip);
+      } else if (con.down->held) {
+         p->frame -= 0.1;
+         drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 8, 4, &p->frame, p->flip);
+      } else {
+         drawAspriteFrame(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 8, p->flip);
+      }
+   }
 }
 
 void loadLevel(const char * fname, int connection)
@@ -1236,20 +1399,10 @@ int main(int argc, char ** argv)
    pixelbuffer = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, field_w, field_h);
    reproject_screen(start_w, start_h);
 
+   tex.saber = loadTexture("saber.gif");
+
    testsprite st = createTestSprite(10, 10, 255, 255, 0);
 
-#if 0
-   p1 = createPlayer(100, field_h/2);
-
-#if 0
-   createTileAlignedWall(2, 2, 1, 1);
-   createTileAlignedWall(2, 4, 1, 1);
-#endif
-   createTileAlignedWall(0, field_h_tiles - 1, field_w_tiles, 1);
-   createTileAlignedWall(0, 0, field_w_tiles, 1);
-   createTileAlignedWall(field_w_tiles - 1, 0, 1, field_h_tiles);
-   createTileAlignedWall(0, 0, 1, field_h_tiles);
-#endif
    loadLevel("startroom.txt", 0);
 
    float t;
@@ -1265,12 +1418,14 @@ int main(int argc, char ** argv)
       con.up = bindAxis(1, -1);
       con.down = bindAxis(1, 1);
       con.jump = bindButton(0);
+      con.fire = bindButton(2);
    } else {
       con.left = bindKey(SDLK_LEFT);
       con.right = bindKey(SDLK_RIGHT);
       con.up = bindKey(SDLK_UP);
       con.down = bindKey(SDLK_DOWN);
       con.jump = bindKey(SDLK_d);
+      con.fire = bindKey(SDLK_f);
    }
 
    while (running) {
@@ -1306,13 +1461,15 @@ int main(int argc, char ** argv)
 
 
       tickPlayer(&p1);
+      stepPshots();
 
 
       SDL_SetRenderDrawColor(ren, 0, 255, 255, 255);
       debugDrawWalls(ren);
       drawLadders();
       drawPlayer(&p1);
-      drawConnections();
+      drawPshots();
+      //drawConnections();
       //drawing goes here
       SDL_SetRenderTarget(ren, 0);
       SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
