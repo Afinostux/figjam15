@@ -5,6 +5,7 @@
 #include <math.h>
 #include <assert.h>
 #include <float.h>
+#include <string.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
 #include <SDL2/SDL_image.h>
@@ -17,8 +18,15 @@ SDL_Renderer *ren;
 SDL_Texture *pixelbuffer;
 SDL_Joystick *joy;
 SDL_Rect projection;
+enum songstates {
+   ss_silent,
+   ss_leveltheme,
+   ss_bosstheme
+};
+int songstate;
 int running = 1;
 int frame;
+void loadLevel(const char * fname, int connection);
 
 #define maxof(lcs) lcs##_max
 #define countof(lcs) lcs##_count
@@ -61,7 +69,37 @@ struct {
    SDL_Texture *robots;
    SDL_Texture *wall;
    SDL_Texture *stone;
+   SDL_Texture *effect;
+   SDL_Texture *mirv;
+   SDL_Texture *ladder;
 } tex;
+
+struct {
+   Mix_Chunk *hit;
+   Mix_Chunk *mirv_engine;
+   Mix_Chunk *mirv_hit;
+   Mix_Chunk *mirv_die;
+   Mix_Chunk *mirv_shotgun;
+   Mix_Chunk *reflect;
+   Mix_Chunk *rock_break;
+   Mix_Chunk *saber_die;
+   Mix_Chunk *saber_hit;
+   Mix_Chunk *saber_jump;
+   Mix_Chunk *saber_heal;
+   Mix_Chunk *saber_shoot;
+   Mix_Chunk *spider_hit;
+   Mix_Chunk *spider_shoot;
+} sound;
+
+void play(Mix_Chunk *ch)
+{
+   Mix_PlayChannel(-1, ch, 0);
+}
+
+struct {
+   Mix_Music *mirv_theme;
+   Mix_Music *level_theme;
+} music;
 
 SDL_Texture* loadTexture(const char* file)
 {
@@ -525,10 +563,18 @@ int rectIntersectsLadders(rect *mr)
 
 void drawLadders()
 {
-   SDL_SetRenderDrawColor(ren, 120, 80, 20, 255);
+   SDL_Rect lrect;
+   lrect.w = lrect.h = 16;
    for (int i = 0; i < countof(ladder); i++) {
       ladder *l = tc_at(ladder, i);
-      drawRect(ren, &l->bounds);
+      if (rectOnScreen(&l->bounds)) {
+         lrect.x = l->bounds.x - camera.position.x;
+         int max = l->bounds.y + l->bounds.h;
+         for (int y = l->bounds.y; y < max; y += 16) {
+            lrect.y = y - camera.position.y;
+            SDL_RenderCopy(ren, tex.ladder, 0, &lrect);
+         }
+      }
    }
 }
 
@@ -922,6 +968,7 @@ struct {
    control *right;
    control *jump;
    control *fire;
+   control *reset;
 } con;
 
 struct effect {
@@ -943,10 +990,61 @@ void createEffect(SDL_Texture *t, v2 position, v2 velocity, int w, int h, int fr
    if (e) {
       e->spr = createAsprite(t, w, h);
       e->offset = makev2(-w/2, -h/2);
+      e->position = position;
       e->velocity = velocity;
       e->timer_start = e->timer = time;
       e->frame_start = framestart;
       e->frame_end = frameend;
+   }
+}
+
+void effect_smalldie(v2 position)
+{
+   createEffect(tex.effect, position, makev2(0,0), 16, 16, 4, 6, 10);
+}
+
+void effect_explode(v2 position)
+{
+   float step = M_PI / 4;
+   for (int i = 0; i < 8; i++) {
+      v2 vel = makeRotatedV2(0, 1.3, step * i);
+      v2 pos = position + makeRotatedV2(4, 0, step * i);
+      createEffect(tex.effect, pos, vel, 16, 16, 4, 6, 20);
+   }
+}
+
+void effect_explode_large(v2 position)
+{
+   float step = M_PI / 4;
+   for (int i = 0; i < 8; i++) {
+      v2 vel = makeRotatedV2(0, 0.1, step * i);
+      v2 pos = position + makeRotatedV2(4, 0, step * i);
+      createEffect(tex.effect, pos, vel, 16, 16, 12, 15, 100);
+   }
+   for (int j = 0; j < 3; j++) {
+      for (int i = 0; i < 8; i++) {
+         v2 vel = makeRotatedV2(0, 0.3 + 0.3 * j, step * i);
+         v2 pos = position + makeRotatedV2(4, 0, step * i);
+         createEffect(tex.effect, pos, vel, 16, 16, 4, 6, 60 - 20 * j);
+      }
+   }
+}
+
+void drawEffects()
+{
+   for (int i = 0; i < countof(effect); i++) {
+      effect *e = tc_at(effect, i);
+      if (e->timer == 0) {
+         tc_erase(effect, i);
+         i--;
+         continue;
+      }
+      e->timer -= 1;
+      float t = (float)(e->timer_start - e->timer)/e->timer_start;
+      int frame = floor(((float)e->frame_start + 0.5)*(1 - t) + ((float)e->frame_end + 0.5)*(t));
+      e->position = e->position + e->velocity;
+      v2 drawpos = e->position + e->offset;
+      drawAspriteFrame(&e->spr, drawpos.x, drawpos.y, frame, 0);
    }
 }
 
@@ -977,6 +1075,7 @@ void firePshot(float x, float y, float hspeed)
 {
    p_shot *shot = tc_new(pshot);
    if (shot) {
+      play(sound.saber_shoot);
       shot->spr = createAsprite(tex.saber, 16, 16);
       shot->position.x = x;
       shot->position.y = y;
@@ -1071,14 +1170,21 @@ player createPlayer(float x, float y)
 void hurtPlayer(float vx, float vy, int amount)
 {
    if (p1.hurt_timer == 0) {
+      play(sound.saber_hit);
       p1.hitpoints = max(p1.hitpoints - amount, 0);
-      p1.velocity.x += vx;
-      p1.velocity.y += vy;
+      p1.velocity.x = vx;
+      p1.velocity.y = vy;
       p1.hurt_timer = 200;
       if (!rectIntersectsWalls(getPlayerBounds(&p1))) {
          p1.onladder = 0;
       }
    }
+}
+
+void healPlayer(int amount)
+{
+   play(sound.saber_heal);
+   p1.hitpoints = min(p1.hitpoints + amount, 100);
 }
 
 int player_hurt_threshold = 180;
@@ -1090,100 +1196,115 @@ void tickPlayer(player *p)
    float player_jump = 4.5;
    float player_shot_speed = 2.5;
    int player_jump_grace = 20;
-   if (p->hurt_timer > 0) {
-      p->hurt_timer -= 1;
-   }
-   if (p->hurt_timer > player_hurt_threshold) {
-      if (rectOnGround(getPlayerBounds(p))) {
-         p->velocity.x = fapproach(p->velocity.x, 0, player_accel);
+   if (p->alive) {
+      if (p->hurt_timer > 0) {
+         p->hurt_timer -= 1;
       }
-      if (!p->onladder) {
-         p->velocity.y += player_gravity;
-         v2 frame_displacement;
-         getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
-         p->position = p->position + frame_displacement;
-      }
-   } else {
-      if (con.fire->pressed) {
-         if (con.left->held) {
-            firePshot(p->position.x, p->position.y, -player_shot_speed);
-         } else if (con.right->held) {
-            firePshot(p->position.x, p->position.y, player_shot_speed);
-         } else {
-            if (p->flip) {
-               firePshot(p->position.x, p->position.y, -player_shot_speed);
-            } else {
-               firePshot(p->position.x, p->position.y, player_shot_speed);
-            }
-         }
-      }
-      if (p->onladder) {
-         ladder *l = getIntersectingLadder(getPlayerBounds(p));
-         if (l) {
-            p->position.x = fapproach(p->position.x, l->bounds.x + l->bounds.w * 0.5, 1);
-            if (con.up->held) {
-               p->position.y -= 1;
-            } else if (con.down->held) {
-               p->position.y += 1;
-            }
-            if (con.jump->pressed) {
-               if (!rectIntersectsWalls(getPlayerBounds(p))) {
-                  p->onladder = 0;
-                  p->velocity.x = 0;
-                  p->velocity.y = -player_jump * 0.5;
-               }
-            }
-         } else {
-            p->onladder = 0;
-            p->velocity.x = 0;
-            p->velocity.y = 0;
-         }
-      } else {
-         rect bounds = *getPlayerBounds(p);
-         if (con.left->held) {
-            p->velocity.x = fapproach(p->velocity.x, -player_wspeed, player_accel);
-         } else if (con.right->held) {
-            p->velocity.x = fapproach(p->velocity.x, player_wspeed, player_accel);
-         } else {
+      if (p->hurt_timer > player_hurt_threshold) {
+         if (rectOnGround(getPlayerBounds(p))) {
             p->velocity.x = fapproach(p->velocity.x, 0, player_accel);
          }
-
-         if (con.jump->held && con.jump->frames < player_jump_grace) {
-            if (rectOnGround(getPlayerBounds(p))) {
-               p->velocity.y = -player_jump;
-               p->jumping = 1;
+         if (!p->onladder) {
+            p->velocity.y += player_gravity;
+            v2 frame_displacement;
+            getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
+            p->position = p->position + frame_displacement;
+         }
+      } else {
+         if (p->hitpoints == 0) {
+            p->alive = 0;
+            play(sound.saber_die);
+            effect_explode_large(p->position);
+            p->hurt_timer = 300;
+         }
+         if (con.fire->pressed) {
+            if (con.left->held) {
+               firePshot(p->position.x, p->position.y, -player_shot_speed);
+            } else if (con.right->held) {
+               firePshot(p->position.x, p->position.y, player_shot_speed);
+            } else {
+               if (p->flip) {
+                  firePshot(p->position.x, p->position.y, -player_shot_speed);
+               } else {
+                  firePshot(p->position.x, p->position.y, player_shot_speed);
+               }
             }
          }
-         if (p->jumping) {
-            if (con.jump->released && p->velocity.y < 0.f) {
-               p->jumping = 0;
-               p->velocity.y *= 0.3;
-            } else if (p->velocity.y >= 0.f) {
-               p->jumping = 0;
+         if (p->onladder) {
+            ladder *l = getIntersectingLadder(getPlayerBounds(p));
+            if (l) {
+               p->position.x = fapproach(p->position.x, l->bounds.x + l->bounds.w * 0.5, 1);
+               if (con.up->held) {
+                  p->position.y -= 1;
+               } else if (con.down->held) {
+                  p->position.y += 1;
+               }
+               if (con.jump->pressed) {
+                  if (!rectIntersectsWalls(getPlayerBounds(p))) {
+                     p->onladder = 0;
+                     p->velocity.x = 0;
+                     p->velocity.y = -player_jump * 0.5;
+                  }
+               }
+            } else {
+               p->onladder = 0;
+               p->velocity.x = 0;
+               p->velocity.y = 0;
             }
-         }
-         p->velocity.y += player_gravity;
-         v2 frame_displacement;
-         getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
-         p->position = p->position + frame_displacement;
-         if (!p->accept_ladder) {
-            p->accept_ladder = (con.up->pressed || con.down->pressed) || (con.up->held && con.jump->pressed);
          } else {
-            if (con.up->released || con.down->released) {
-               p->accept_ladder = 0;
+            rect bounds = *getPlayerBounds(p);
+            if (con.left->held) {
+               p->velocity.x = fapproach(p->velocity.x, -player_wspeed, player_accel);
+            } else if (con.right->held) {
+               p->velocity.x = fapproach(p->velocity.x, player_wspeed, player_accel);
+            } else {
+               p->velocity.x = fapproach(p->velocity.x, 0, player_accel);
+            }
+
+            if (con.jump->held && con.jump->frames < player_jump_grace) {
+               if (rectOnGround(getPlayerBounds(p))) {
+                  p->velocity.y = -player_jump;
+                  play(sound.saber_jump);
+                  p->jumping = 1;
+               }
+            }
+            if (p->jumping) {
+               if (con.jump->released && p->velocity.y < 0.f) {
+                  p->jumping = 0;
+                  p->velocity.y *= 0.3;
+               } else if (p->velocity.y >= 0.f) {
+                  p->jumping = 0;
+               }
+            }
+            p->velocity.y += player_gravity;
+            v2 frame_displacement;
+            getMotionWalled(getPlayerBounds(p), &p->velocity, &p->velocity, &frame_displacement);
+            p->position = p->position + frame_displacement;
+            if (!p->accept_ladder) {
+               p->accept_ladder = (con.up->pressed || con.down->pressed) || (con.up->held && con.jump->pressed);
+            } else {
+               if (con.up->released || con.down->released) {
+                  p->accept_ladder = 0;
+               }
+            }
+            if (p->accept_ladder) {
+               if (rectIntersectsLadders(getPlayerBounds(p))) {
+                  p->accept_ladder = 0;
+                  p->onladder = 1;
+               }
+            }
+            if (p->velocity.x > 0) {
+               p->flip = 0;
+            } else if (p->velocity.x < 0) {
+               p->flip = 1;
             }
          }
-         if (p->accept_ladder) {
-            if (rectIntersectsLadders(getPlayerBounds(p))) {
-               p->accept_ladder = 0;
-               p->onladder = 1;
-            }
-         }
-         if (p->velocity.x > 0) {
-            p->flip = 0;
-         } else if (p->velocity.x < 0) {
-            p->flip = 1;
-         }
+      }
+   } else {
+      if (p->hurt_timer > 0) {
+         p->hurt_timer -= 1;
+      } else {
+         loadLevel("startroom.txt", 0);
       }
    }
    setCameraFocus(&p->position);
@@ -1191,6 +1312,9 @@ void tickPlayer(player *p)
 
 void drawPlayer(player *p)
 {
+   if (!p->alive) {
+      return;
+   }
    SDL_SetRenderDrawColor(ren, 255, 255, 100, 255);
    float ofs_x = -8;
    float ofs_y = -9;
@@ -1367,6 +1491,7 @@ void fireSmallLaser(float x, float y, float hspeed)
 {
    slaser *sl = tc_new(slaser);
    if (sl) {
+      play(sound.spider_shoot);
       sl->spr = createAsprite(tex.robots, 16, 16);
       sl->position = makev2(x, y);
       sl->hspeed = hspeed;
@@ -1386,6 +1511,71 @@ void createSpiderMob(float x, float y, int flip)
    }
 }
 
+struct item {
+   asprite spr;
+   v2 position;
+   int healamt;
+   int frame[2];
+   int timer;
+};
+
+tc_create(item, item, 8);
+
+void createItem(float x, float y, int islarge, int infinite)
+{
+   item *it = tc_new(item);
+   if (it) {
+      it->spr = createAsprite(tex.saber, 16, 16);
+      it->position = makev2(x, y);
+      if (infinite) {
+         it->timer = -1;
+      } else {
+         it->timer = 1000;
+      }
+      if (islarge) {
+         it->frame[0] = 14;
+         it->frame[1] = 15;
+         it->healamt = 40;
+      } else {
+         it->frame[0] = 12;
+         it->frame[1] = 13;
+         it->healamt = 10;
+      }
+   }
+}
+
+void randomDrop(v2 position)
+{
+   int dice = rand() % 64;
+   if (dice < 8) {
+      if (dice%4) {
+         createItem(position.x, position.y, 0, 0);
+      } else {
+         createItem(position.x, position.y, 1, 0);
+      }
+   }
+}
+
+struct mirvrocket {
+   asprite spr;
+   v2 position;
+   int direction;
+   v2 velocity;
+};
+
+tc_create(mirvrocket, mirvr, 32);
+
+void fireMirvRocket(float x, float y, float hs, float vs, int dir)
+{
+   mirvrocket *mr = tc_new(mirvr);
+   if (mr) {
+      mr->spr = createAsprite(tex.effect, 16, 16);
+      mr->position = makev2(x, y);
+      mr->velocity = makev2(hs, vs);
+      mr->direction = dir;
+   }
+}
+
 void tickEnemies()
 {
    for (int i = 0; i < countof(boulder); ) {
@@ -1393,9 +1583,14 @@ void tickEnemies()
       p_shot *s = clipWithPshots(getBoulderBounds(bb));
       if (s) {
          s->position.x = -1000;
+         play(sound.hit);
          bb->hitpoints--;
          if (bb->hitpoints < 1) {
             bb->blocker->active = 0;
+            v2 p = makev2(bb->blocker->bounds.x, bb->blocker->bounds.y) + makev2(32, 0);
+            effect_explode_large(p);
+            play(sound.rock_break);
+            randomDrop(p);
             tc_erase(boulder, i);
             continue;
          }
@@ -1405,6 +1600,8 @@ void tickEnemies()
    for (int i = 0; i < countof(dozer); ) {
       dozermob *dz = tc_at(dozer, i);
       if (dz->hitpoints < 1) {
+         effect_smalldie(dz->position);
+         randomDrop(dz->position);
          tc_erase(dozer, i);
          continue;
       }
@@ -1444,10 +1641,16 @@ void tickEnemies()
             if (dz->flip) {
                if (bullet->velocity.x < 0) {
                   dz->hitpoints -= 1;
+                  play(sound.hit);
+               } else {
+                  play(sound.reflect);
                }
             } else {
                if (bullet->velocity.x > 0) {
                   dz->hitpoints -= 1;
+                  play(sound.hit);
+               } else {
+                  play(sound.reflect);
                }
             }
          }
@@ -1472,6 +1675,8 @@ void tickEnemies()
    for (int i = 0; i < countof(bullet); ) {
       bulletmob *b = tc_at(bullet, i);
       if (b->hitpoints < 1) {
+         effect_smalldie(b->position);
+         randomDrop(b->position);
          tc_erase(bullet, i);
          continue;
       }
@@ -1508,6 +1713,7 @@ void tickEnemies()
          p_shot *bullet = clipWithPshots(&bulletbounds);
          if (bullet) {
             bullet->position.x = -1000;
+            play(sound.hit);
             b->hitpoints -= 1;
          }
          if (rectsOverlap(&bulletbounds, getPlayerBounds(&p1))) {
@@ -1531,6 +1737,8 @@ void tickEnemies()
    for (int i = 0; i < countof(saucer); ) {
       saucermob *s = tc_at(saucer, i);
       if (s->hitpoints < 1) {
+         effect_smalldie(s->position);
+         randomDrop(s->position);
          tc_erase(saucer, i);
          continue;
       }
@@ -1549,6 +1757,7 @@ void tickEnemies()
          p_shot *bullet = clipWithPshots(&saucerbounds);
          if (bullet) {
             bullet->position.x = -1000;
+            play(sound.hit);
             s->hitpoints -= 1;
          }
          if (rectsOverlap(&saucerbounds, getPlayerBounds(&p1))) {
@@ -1566,6 +1775,8 @@ void tickEnemies()
       rect laserbounds = makeRect(sl->position.x - 6, sl->position.y - 2, 12, 4);
       if (rectsOverlap(&laserbounds, getPlayerBounds(&p1))) {
          hurtPlayer(sl->hspeed, -1, 20);
+         play(sound.spider_hit);
+         effect_explode(sl->position);
          tc_erase(slaser, i);
          continue;
       }
@@ -1576,9 +1787,27 @@ void tickEnemies()
       }
       i++;
    }
+   for (int i = 0; i < countof(mirvr); ) {
+      mirvrocket *mr = tc_at(mirvr, i);
+      rect rocketbounds = makeRect(mr->position.x - 4, mr->position.y - 4, 8, 8);
+      if (rectsOverlap(&rocketbounds, getPlayerBounds(&p1))) {
+         hurtPlayer(mr->velocity.x, -2, 20);
+         effect_explode(mr->position);
+         tc_erase(mirvr, i);
+         continue;
+      }
+      mr->position = mr->position + mr->velocity;
+      if (!rectInRoom(&rocketbounds)) {
+         tc_erase(mirvr, i);
+         continue;
+      }
+      i++;
+   }
    for (int i = 0; i < countof(spider); ) {
       spidermob *sp = tc_at(spider, i);
       if (sp->hitpoints < 1) {
+         effect_smalldie(sp->position);
+         randomDrop(sp->position);
          tc_erase(spider, i);
          continue;
       }
@@ -1620,6 +1849,7 @@ void tickEnemies()
          p_shot *bullet = clipWithPshots(&spiderbounds);
          if (bullet) {
             bullet->position.x = -1000;
+            play(sound.hit);
             sp->hitpoints -= 1;
          }
          if (rectsOverlap(&spiderbounds, getPlayerBounds(&p1))) {
@@ -1631,6 +1861,29 @@ void tickEnemies()
          }
       }
       i++;
+   }
+   for (int i = 0; i < countof(item); i++) {
+      item *it = tc_at(item, i);
+      rect itembounds = makeRect(it->position.x - 4, it->position.y - 8, 8, 16);
+      if (rectsOverlap(&itembounds, getPlayerBounds(&p1))) {
+         if (p1.hitpoints < 100) {
+            healPlayer(it->healamt);
+            tc_erase(item, i);
+            i--;
+            continue;
+         }
+      }
+      if (it->timer >= 0) {
+         if (it->timer == 0 || !rectOnScreen(&itembounds)) {
+            tc_erase(item, i);
+            i--;
+            continue;
+         }
+      }
+      v2 fakevelocity = makev2(0, 4);
+      v2 displacement;
+      getMotionWalled(&itembounds, &fakevelocity, 0, &displacement);
+      it->position = it->position + displacement;
    }
 }
 
@@ -1692,6 +1945,254 @@ void drawEnemies()
          drawAnimatingAsprite(&sp->spr, sp->position.x - 8, sp->position.y - 8, 12, 3, &sp->frame, sp->flip);
       }
    }
+   for (int i = 0; i < countof(item); i++) {
+      item *it = tc_at(item, i);
+      if (it->timer > 100 || it->timer < 0) {
+         drawAspriteFrame(&it->spr, it->position.x - 8, it->position.y - 8, it->frame[(frame/8)%2], 0);
+      } else {
+         if ((frame/2)%2) {
+            drawAspriteFrame(&it->spr, it->position.x - 8, it->position.y - 8, it->frame[(frame/8)%2], 0);
+         }
+      }
+   }
+   for (int i = 0; i < countof(mirvr); i++) {
+      mirvrocket *mr = tc_at(mirvr, i);
+      drawAspriteFrame(&mr->spr, mr->position.x - 8, mr->position.y - 8, mr->direction, 0);
+   }
+}
+
+enum mirv_actions {
+   ma_entry,
+   ma_taunt,
+   ma_fly,
+   ma_dive,
+   ma_findland,
+   ma_shotgun,
+   ma_takeoff,
+   ma_rise,
+   ma_bomb,
+   ma_count
+};
+
+struct mirv_s{
+   asprite spr;
+   v2 position;
+   int active;
+   int state; 
+   int timer;
+   int hurttimer;
+   int hitpoints;
+   int flip;
+   float frame;
+   float orbit;
+   v2 velocity;
+} mirv;
+
+void startMirv(float x, float y)
+{
+   memset(&mirv, 0, sizeof(mirv_s));
+   mirv.spr = createAsprite(tex.mirv, 32, 32);
+   mirv.active = 1;
+   mirv.position = makev2(x, y);
+   mirv.hitpoints = 100;
+}
+
+void doMirv()
+{
+   if (mirv.active) {
+      v2 drawpos = makev2(mirv.position.x - 16, mirv.position.y - 16);
+      rect mirvbounds = makeRect(mirv.position.x - 8, mirv.position.y - 8, 16, 24);
+
+      if (p1.position.x < mirv.position.x) {
+         mirv.flip = 1;
+      } else {
+         mirv.flip = 0;
+      }
+
+      if (rectsOverlap(getPlayerBounds(&p1), &mirvbounds)) {
+         if (mirv.flip) {
+            hurtPlayer(-2, -4, 30);
+         } else {
+            hurtPlayer(2, -4, 30);
+         }
+      }
+
+
+      if (!mirv.hurttimer) {
+         p_shot *shot = clipWithPshots(&mirvbounds);
+            if (shot) {
+               shot->position.x = -1000;
+               mirv.hitpoints = max(0, mirv.hitpoints - 5);
+               mirv.hurttimer = 20;
+            }
+            if (!mirv.hitpoints) {
+               play(sound.mirv_die);
+               effect_explode_large(mirv.position);
+               mirv.active = 0;
+            }
+      } else {
+         mirv.hurttimer -= 1;
+      }
+
+      if (mirv.timer > 0) {
+         mirv.timer--;
+      }
+
+      float gravity = 0.05;
+      float hover = 150;
+
+      switch (mirv.state) {
+         case ma_entry:
+            {
+               mirv.velocity.y += gravity;
+               if (mirv.hitpoints < 100) {
+                  mirv.state = ma_taunt;
+                  mirv.timer = 30;
+               }
+               drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 0, mirv.flip);
+            }break;
+         case ma_taunt:
+            {
+               mirv.velocity.y += gravity;
+               if (!mirv.timer) {
+                  play(sound.mirv_engine);
+                  mirv.state = ma_takeoff;
+                  mirv.orbit = mirv.position.x - 4;
+               }
+               drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 1, mirv.flip);
+            }break;
+         case ma_fly:
+            {
+               if ((frame/1000)%2) {
+                  mirv.orbit = p1.position.x - 100;
+               } else {
+                  mirv.orbit = p1.position.x + 100;
+               }
+               if (mirv.position.x > mirv.orbit) {
+                  mirv.velocity.x = fapproach(mirv.velocity.x, -1, 0.01);
+               } else {
+                  mirv.velocity.x = fapproach(mirv.velocity.x, 1, 0.01);
+               }
+               if (mirv.position.y > p1.position.y - hover) {
+                  mirv.velocity.y = fapproach(mirv.velocity.y, -1, 0.01);
+               } else {
+                  mirv.velocity.y = fapproach(mirv.velocity.y, 1, 0.01);
+               }
+               if (!mirv.timer) {
+                  if ((rand() % 100) < 30) {
+                     mirv.state = ma_rise;
+                     play(sound.mirv_engine);
+                  } else {
+                     mirv.state = ma_findland;
+                  }
+               }
+               mirv.frame += 0.2;
+               drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
+            }break;
+         case ma_dive:
+            {
+               mirv.frame += 0.1;
+               drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
+            }break;
+         case ma_findland:
+            {
+               mirv.velocity.y += gravity;
+               if (rectOnGround(&mirvbounds)) {
+                  mirv.velocity.x = 0;
+                  mirv.state = ma_shotgun;
+                  mirv.timer = 20;
+                  play(sound.mirv_shotgun);
+                  if (mirv.flip) {
+                     fireMirvRocket(mirv.position.x - 16, mirv.position.y, -3, -1, 2);
+                     fireMirvRocket(mirv.position.x - 16, mirv.position.y, -3, 0, 2);
+                     fireMirvRocket(mirv.position.x - 16, mirv.position.y, -3, 1, 2);
+                  } else {
+                     fireMirvRocket(mirv.position.x + 16, mirv.position.y,  3, -1, 0);
+                     fireMirvRocket(mirv.position.x + 16, mirv.position.y,  3, 0, 0);
+                     fireMirvRocket(mirv.position.x + 16, mirv.position.y,  3, 1, 0);
+                  }
+               }
+               drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 4, mirv.flip);
+            }break;
+         case ma_shotgun:
+            {
+               if (!mirv.timer) {
+                  mirv.timer = 50;
+                  mirv.state = ma_taunt;
+               }
+               drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 3, mirv.flip);
+            }break;
+         case ma_takeoff:
+            {
+               if (mirv.position.y < p1.position.y - hover) {
+                  mirv.state = ma_fly;
+                  mirv.timer = 500 + (rand() % 1000);
+               }
+               if (mirv.position.x > mirv.orbit) {
+                  mirv.velocity.x = fapproach(mirv.velocity.x, -1, 0.01);
+               } else {
+                  mirv.velocity.x = fapproach(mirv.velocity.x, 1, 0.01);
+               }
+               mirv.velocity.y = fapproach(mirv.velocity.y, -1, 0.01);
+               mirv.frame += 0.6;
+               drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
+            }break;
+         case ma_rise:
+            {
+               if (mirv.position.y < p1.position.y - 2*hover) {
+                  mirv.state = ma_bomb;
+                  mirv.timer = 20;
+                  float startx = p1.position.x - 300;
+                  float maxx = p1.position.x + 300;
+                  float launchy = camera.position.y - 16;
+                  for (float lx = startx; lx < maxx; lx += 32) {
+                     switch (rand() % 3) {
+                        case 0:
+                           fireMirvRocket(lx, launchy, -0.1, 2, 3);
+                           break;
+                        case 1:
+                           fireMirvRocket(lx, launchy, 0, 2, 3);
+                           break;
+                        case 2:
+                           fireMirvRocket(lx, launchy, 0.1, 2, 3);
+                           break;
+                     }
+                  }
+               }
+               mirv.velocity.x = 0;
+               mirv.velocity.y = fapproach(mirv.velocity.y, -1, 0.01);
+               mirv.frame += 0.6;
+               drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
+            }break;
+         case ma_bomb:
+            {
+               if (!mirv.timer) {
+                  mirv.state = ma_fly;
+                  mirv.timer = 500 + (rand() % 1000);
+               }
+            }break;
+         default:
+            break;
+      }
+      v2 displacement;
+      getMotionWalled(&mirvbounds, &mirv.velocity, &mirv.velocity, &displacement);
+      mirv.position = mirv.position + displacement;
+
+      SDL_Rect healthrect;
+      SDL_Rect healthbar;
+      healthrect.x = healthbar.x = field_w - 8;
+      healthrect.y = healthbar.y = 4;
+      healthrect.w = healthbar.w = 4;
+      healthrect.h = 100;
+      healthbar.h = mirv.hitpoints;
+      healthbar.y += healthrect.h - healthbar.h;
+      SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+      SDL_RenderFillRect(ren, &healthrect);
+      SDL_SetRenderDrawColor(ren, 255, 255, 100, 255);
+      SDL_RenderFillRect(ren, &healthbar);
+      SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+      SDL_RenderDrawRect(ren, &healthrect);
+   }
 }
 
 void clearEnemies()
@@ -1702,6 +2203,8 @@ void clearEnemies()
    countof(saucer) = 0;
    countof(slaser) = 0;
    countof(spider) = 0;
+   countof(item) = 0;
+   mirv.active = 0;
 }
 
 struct {
@@ -1915,6 +2418,13 @@ void loadLevel(const char * fname, int connection)
                   int y = (i / pitch) * tile_yc;
                   createSaucerMob((x + 1) * tile_size, (y + 1) * tile_size);
                }break;
+            case 'I':
+            case 'i':
+               {
+                  int x = (i % pitch) * tile_xc;
+                  int y = (i / pitch) * tile_yc;
+                  createItem((x + 1) * tile_size, (y + 1) * tile_size, block[i] == 'I', 1);
+               }break;
             case 'B':
             case 'b':
                {
@@ -1935,6 +2445,12 @@ void loadLevel(const char * fname, int connection)
                   int x = (i % pitch) * tile_xc;
                   int y = (i / pitch) * tile_yc;
                   createSpiderMob((x + 1) * tile_size, (y + 1) * tile_size, block[i] == 'p');
+               }break;
+            case 'M':
+               {
+                  int x = (i % pitch) * tile_xc;
+                  int y = (i / pitch) * tile_yc;
+                  startMirv((x) * tile_size, (y) * tile_size);
                }break;
             case 'O':
                {
@@ -2124,6 +2640,29 @@ int main(int argc, char ** argv)
    tex.robots = loadTexture("robots.gif");
    tex.wall = loadTexture("wall.gif");
    tex.stone = loadTexture("boulder.gif");
+   tex.effect = loadTexture("mirvattack.gif");
+   tex.mirv = loadTexture("mirv.gif");
+   tex.ladder = loadTexture("ladder.gif");
+
+   Mix_Init(0);
+   assert(!Mix_OpenAudio(22050, AUDIO_U16SYS, 1, 256));
+   Mix_AllocateChannels(16);
+   sound.hit               = Mix_LoadWAV("sound/hit.wav");
+   sound.mirv_engine       = Mix_LoadWAV("sound/mirv_engine.wav");
+   sound.mirv_hit          = Mix_LoadWAV("sound/mirv_hit.wav");
+   sound.mirv_die          = Mix_LoadWAV("sound/mirv_die.wav");
+   sound.mirv_shotgun      = Mix_LoadWAV("sound/mirv_shotgun.wav");
+   sound.reflect           = Mix_LoadWAV("sound/reflect.wav");
+   sound.rock_break        = Mix_LoadWAV("sound/rock_break.wav");
+   sound.saber_die         = Mix_LoadWAV("sound/saber_die.wav");
+   sound.saber_hit         = Mix_LoadWAV("sound/saber_hit.wav");
+   sound.saber_jump        = Mix_LoadWAV("sound/saber_jump.wav");
+   sound.saber_shoot       = Mix_LoadWAV("sound/saber_shoot.wav");
+   sound.saber_heal        = Mix_LoadWAV("sound/saber_heal.wav");
+   sound.spider_hit        = Mix_LoadWAV("sound/spider_hit.wav");
+   sound.spider_shoot      = Mix_LoadWAV("sound/spider_shoot.wav");
+   music.mirv_theme        = Mix_LoadMUS("sound/mirv_theme_scott.wav");
+   music.level_theme       = Mix_LoadMUS("sound/saber_level_theme.wav");
 
    testsprite st = createTestSprite(10, 10, 255, 255, 0);
 
@@ -2143,6 +2682,7 @@ int main(int argc, char ** argv)
       con.down = bindAxis(1, 1);
       con.jump = bindButton(0);
       con.fire = bindButton(2);
+      con.reset = bindButton(8);
    } else {
       con.left = bindKey(SDLK_LEFT);
       con.right = bindKey(SDLK_RIGHT);
@@ -2153,6 +2693,9 @@ int main(int argc, char ** argv)
    }
 
    while (running) {
+      if (con.reset->pressed) {
+         loadLevel("startroom.txt", 0);
+      }
       startControlFrame();
       SDL_Event e;
       while (SDL_PollEvent(&e)) {
@@ -2179,6 +2722,40 @@ int main(int argc, char ** argv)
                break;
          }
       }
+      if (p1.alive) {
+         switch (songstate) {
+            case ss_silent:
+               if (countof(boulder) == 0) {
+                  Mix_FadeInMusic(music.level_theme, -1, 1000);
+                  songstate = ss_leveltheme;
+               }
+               if (mirv.active) {
+                  Mix_FadeInMusic(music.mirv_theme, -1, 1000);
+                  songstate = ss_bosstheme;
+               }
+               break;
+            case ss_leveltheme:
+               if (countof(boulder) > 0) {
+                  Mix_FadeOutMusic(1000);
+               }
+               if (!Mix_PlayingMusic()) {
+                  songstate = ss_silent;
+               }
+               if (mirv.active) {
+                  Mix_FadeInMusic(music.mirv_theme, -1, 1000);
+                  songstate = ss_bosstheme;
+               }
+               break;
+            case ss_bosstheme:
+               if (!mirv.active) {
+                  Mix_HaltMusic();
+               }
+               break;
+         };
+      } else {
+         songstate = ss_silent;
+         Mix_HaltMusic();
+      }
       SDL_SetRenderTarget(ren, pixelbuffer);
       SDL_SetRenderDrawColor(ren, 25, 25, 25, 255);
       SDL_RenderClear(ren);
@@ -2194,8 +2771,10 @@ int main(int argc, char ** argv)
       drawTilemap();
       drawLadders();
       drawEnemies();
+      doMirv();
       drawPlayer(&p1);
       drawPshots();
+      drawEffects();
       //drawConnections();
       //drawing goes here
       SDL_SetRenderTarget(ren, 0);
