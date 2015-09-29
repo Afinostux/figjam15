@@ -1,6 +1,18 @@
 
 #define tile_size 8
 
+#ifdef _WIN32
+#include <windows.h>
+#include <cstdlib>
+#include <cmath>
+#include <cassert>
+#include <cfloat>
+#include <string>
+#include "SDL/SDL.h"
+#include "SDL/SDL_mixer.h"
+#include "SDL/SDL_image.h"
+#undef main
+#else
 #include <stdlib.h>
 #include <math.h>
 #include <assert.h>
@@ -9,6 +21,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
 #include <SDL2/SDL_image.h>
+#endif
 
 // NOTE(afox): what the hell man
 #define PHYS_EPSILON sqrt(FLT_EPSILON) * 100
@@ -54,6 +67,7 @@ void loadLevel(const char * fname, int connection);
 #define start_w 640
 #define start_h 480
 
+#if 0
 int min(int a, int b)
 {
    return (a < b)?a:b;
@@ -63,6 +77,7 @@ int max(int a, int b)
 {
    return (a > b)?a:b;
 }
+#endif
 
 struct {
    SDL_Texture *saber;
@@ -907,7 +922,7 @@ void fireControlEvent(SDL_Event *e)
             break;
       };
    }
-#if 0
+#if 1
    switch (e->type) {
       case SDL_JOYAXISMOTION:
          printf("axis %d: %d\n", e->jaxis.axis, e->jaxis.value);
@@ -2680,9 +2695,16 @@ int main(int argc, char ** argv)
       con.right = bindAxis(0, 1);
       con.up = bindAxis(1, -1);
       con.down = bindAxis(1, 1);
+      // NOTE(afox): xbox controller buttons are different on windows for some reason?
+#ifdef _WIN32
+      con.jump = bindButton(10);
+      con.fire = bindButton(12);
+      con.reset = bindButton(5);
+#else
       con.jump = bindButton(0);
       con.fire = bindButton(2);
       con.reset = bindButton(8);
+#endif
    } else {
       con.left = bindKey(SDLK_LEFT);
       con.right = bindKey(SDLK_RIGHT);
@@ -2690,6 +2712,7 @@ int main(int argc, char ** argv)
       con.down = bindKey(SDLK_DOWN);
       con.jump = bindKey(SDLK_d);
       con.fire = bindKey(SDLK_f);
+      con.reset = bindKey(SDLK_BACKSPACE);
    }
 
    while (running) {
