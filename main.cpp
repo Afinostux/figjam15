@@ -661,7 +661,7 @@ void getMotionWalled(rect *r, v2 *v, v2 *out_velocity, v2 *out_displacement)
    v2 ovel = *v;
    v2 frame_vel = *v;
    v2 frame_displacement = {};
-   for (int i = 0; i < 2; i++) {
+   for (int i = 0; i < 3; i++) {
       if (clipMovingRectWithWalls(&bounds, &frame_vel, &clip_normal, &clip_time)) {
          frame_displacement = frame_displacement + (frame_vel * clip_time);
          frame_vel = frame_vel * (1.f - clip_time);
@@ -922,7 +922,7 @@ void fireControlEvent(SDL_Event *e)
             break;
       };
    }
-#if 1
+#if 0
    switch (e->type) {
       case SDL_JOYAXISMOTION:
          printf("axis %d: %d\n", e->jaxis.axis, e->jaxis.value);
