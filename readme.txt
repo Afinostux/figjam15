@@ -3,7 +3,7 @@
 /////////////////////////////////////////////////////////////////////////////
 
 in the not so distant future,
-two aviation themed robots fight in a weird castle.
+two aviation themed robots fight to the death in a weird castle.
 
 Game and Art by Austin Fox
 
@@ -21,6 +21,9 @@ Nick Pelletier
 
 Special thanks to Tree of Audio
 
+
+The game window may be freely resized at any time!
+
 If you plug in an Xbox controller, you can move with the left analog stick.
 Jump with A, and shoot with X. Press the back button to reset the game.
 On linux, the home button resets the game instead.
@@ -37,6 +40,11 @@ build.sh on linux, or
 build.bat on windows
 
 Happy hunting!
+
+Post jam version changes:
+Fixed clipping bug in corners
+Items and boss patterns are properly randomized, and not tied to the shape of the room they spawned in
+Items spawned from enemies time out properly
 
 see LICENSE for license information.
 

@@ -4,10 +4,12 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <cstdlib>
+#include <cstdio>
 #include <cmath>
 #include <cassert>
 #include <cfloat>
-#include <string>
+#include <cstring>
+#include <ctime>
 #include "SDL/SDL.h"
 #include "SDL/SDL_mixer.h"
 #include "SDL/SDL_image.h"
@@ -18,6 +20,7 @@
 #include <assert.h>
 #include <float.h>
 #include <string.h>
+#include <time.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
 #include <SDL2/SDL_image.h>
@@ -34,7 +37,8 @@ SDL_Rect projection;
 enum songstates {
    ss_silent,
    ss_leveltheme,
-   ss_bosstheme
+   ss_bosstheme,
+   ss_victory
 };
 int songstate;
 int running = 1;
@@ -418,37 +422,6 @@ int clipMovingRects(rect *a, v2 *da, rect *b, v2 *db, v2 *n, float *t)
    v2 vel = (*db)-(*da);
    v2 normal = {};
 
-#if 0
-   if (vel.y > 0) {
-      if (mrect.y + mrect.h < 0) return 0;
-      float teststart = mrect.y / vel.y;
-      float testend = (mrect.y + mrect.h) / vel.y;
-      if (teststart >= tstart) {
-         tstart = teststart;
-         normal.x = 0;
-         normal.y = 1;
-      }
-      if (testend < tend) {
-         tend = testend;
-      }
-   } else if (vel.y < 0) {
-      if (mrect.y > 0) return 0;
-      float teststart = (mrect.y + mrect.h) / vel.y;
-      float testend = mrect.y / vel.y;
-      if (teststart >= tstart) {
-         tstart = teststart;
-         normal.x = 0;
-         normal.y = -1;
-      }
-      if (testend < tend) {
-         tend = testend;
-      }
-   } else {
-      if (!(mrect.y < 0 && mrect.y + mrect.w > 0)) {
-         return 0;
-      }
-   }
-#endif
    if (vel.y > 0) {
       if (mrect.y + mrect.h < 0) return 0;
       float teststart = mrect.y / vel.y;
@@ -509,7 +482,7 @@ int clipMovingRects(rect *a, v2 *da, rect *b, v2 *db, v2 *n, float *t)
       }
    }
 
-   if (tstart < tend) {
+   if (tstart < tend + PHYS_EPSILON) {
       *t = fmax(tstart - PHYS_EPSILON, 0);
       *n = normal;
       return 1;
@@ -661,10 +634,13 @@ void getMotionWalled(rect *r, v2 *v, v2 *out_velocity, v2 *out_displacement)
    v2 ovel = *v;
    v2 frame_vel = *v;
    v2 frame_displacement = {};
-   for (int i = 0; i < 3; i++) {
+   for (int i = 0; i < 2; i++) {
       if (clipMovingRectWithWalls(&bounds, &frame_vel, &clip_normal, &clip_time)) {
-         frame_displacement = frame_displacement + (frame_vel * clip_time);
-         frame_vel = frame_vel * (1.f - clip_time);
+         v2 clip_velocity = frame_vel * clip_time;
+         frame_displacement = frame_displacement + clip_velocity;
+         frame_vel = frame_vel * (1.f - (clip_time));
+         bounds.x += clip_velocity.x;
+         bounds.y += clip_velocity.y;
          if (fabs(clip_normal.x) > PHYS_EPSILON) {
             ovel.x = 0;
             frame_vel.x = 0;
@@ -1545,7 +1521,7 @@ void createItem(float x, float y, int islarge, int infinite)
       if (infinite) {
          it->timer = -1;
       } else {
-         it->timer = 1000;
+         it->timer = 600;
       }
       if (islarge) {
          it->frame[0] = 14;
@@ -1894,6 +1870,7 @@ void tickEnemies()
             i--;
             continue;
          }
+         it->timer--;
       }
       v2 fakevelocity = makev2(0, 4);
       v2 displacement;
@@ -1965,7 +1942,7 @@ void drawEnemies()
       if (it->timer > 100 || it->timer < 0) {
          drawAspriteFrame(&it->spr, it->position.x - 8, it->position.y - 8, it->frame[(frame/8)%2], 0);
       } else {
-         if ((frame/2)%2) {
+         if ((frame/8)%2) {
             drawAspriteFrame(&it->spr, it->position.x - 8, it->position.y - 8, it->frame[(frame/8)%2], 0);
          }
       }
@@ -2627,6 +2604,7 @@ void loadLevel(const char * fname, int connection)
          }
          i++;
       }
+      srand(time(0));
       free(block);
    }
 }
@@ -2772,6 +2750,7 @@ int main(int argc, char ** argv)
             case ss_bosstheme:
                if (!mirv.active) {
                   Mix_HaltMusic();
+                  songstate = ss_silent;
                }
                break;
          };
