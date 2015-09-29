@@ -1311,7 +1311,7 @@ void drawPlayer(player *p)
    float ofs_y = -9;
    if (p->hurt_timer > player_hurt_threshold) {
       p->frame += 0.6;
-      drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 2, 2, &p->frame, p->flip);
+      drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 1, 2, &p->frame, p->flip);
    } else {
       if (!((p->hurt_timer / 2)%2)) {
          if (!p->onladder) {
@@ -2804,7 +2804,11 @@ int main(int argc, char ** argv)
       }
 
       while (SDL_GetPerformanceCounter() < next_step) {
+#ifdef _WIN32
+         SDL_Delay(0);
+#else
          SDL_Delay(1);
+#endif
       }
       next_step = SDL_GetPerformanceCounter() + step_size;
       frame++;

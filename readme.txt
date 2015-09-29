@@ -39,6 +39,9 @@ to build the game from source, install SDL2, SDL2_image, and SDL2_mixer, then ru
 build.sh on linux, or
 build.bat on windows
 
+Source can be found at
+https://github.com/Afinostux/figjam15
+
 Happy hunting!
 
 Post jam version changes:
