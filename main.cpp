@@ -71,7 +71,7 @@ void loadLevel(const char * fname, int connection);
 #define start_w 640
 #define start_h 480
 
-#if 0
+#ifndef _WIN32
 int min(int a, int b)
 {
    return (a < b)?a:b;
@@ -255,6 +255,16 @@ v2 normalizev2(v2 *v)
 struct rect {
    float x, y, w, h;
 };
+
+int pointInRect(v2 *v, rect *r)
+{
+   return ((v->x >= r->x) && (v->y >= r->y) && (v->x <= r->x + r->w) && (v->y <= r->y + r->h));
+}
+
+int pointInRect(float x, float y, rect *r)
+{
+   return ((x >= r->x) && (y >= r->y) && (x <= r->x + r->w) && (y <= r->y + r->h));
+}
 
 struct {
    rect bounds;
@@ -543,6 +553,17 @@ int rectIntersectsLadders(rect *mr)
    for (int i = 0; i < countof(ladder); i++) {
       ladder *l = tc_at(ladder, i);
       if (rectsOverlap(mr, &l->bounds)) {
+         return 1;
+      }
+   }
+   return 0;
+}
+
+int pointOnLadders(v2 *p)
+{
+   for (int i = 0; i < countof(ladder); i++) {
+      ladder *l = tc_at(ladder, i);
+      if (pointInRect(p, &l->bounds)) {
          return 1;
       }
    }
@@ -1279,7 +1300,11 @@ void tickPlayer(player *p)
                }
             }
             if (p->accept_ladder) {
-               if (rectIntersectsLadders(getPlayerBounds(p))) {
+               v2 ladderpoint = p->position;
+               if (con.down->held) {
+                  ladderpoint.y += 8;
+               }
+               if (pointOnLadders(&ladderpoint)) {
                   p->accept_ladder = 0;
                   p->onladder = 1;
                }
@@ -2013,6 +2038,7 @@ void doMirv()
       if (!mirv.hurttimer) {
          p_shot *shot = clipWithPshots(&mirvbounds);
             if (shot) {
+               play(sound.hit);
                shot->position.x = -1000;
                mirv.hitpoints = max(0, mirv.hitpoints - 5);
                mirv.hurttimer = 20;
@@ -2033,138 +2059,148 @@ void doMirv()
       float gravity = 0.05;
       float hover = 150;
 
-      switch (mirv.state) {
-         case ma_entry:
-            {
-               mirv.velocity.y += gravity;
-               if (mirv.hitpoints < 100) {
-                  mirv.state = ma_taunt;
-                  mirv.timer = 30;
-               }
-               drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 0, mirv.flip);
-            }break;
-         case ma_taunt:
-            {
-               mirv.velocity.y += gravity;
-               if (!mirv.timer) {
-                  play(sound.mirv_engine);
-                  mirv.state = ma_takeoff;
-                  mirv.orbit = mirv.position.x - 4;
-               }
-               drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 1, mirv.flip);
-            }break;
-         case ma_fly:
-            {
-               if ((frame/1000)%2) {
-                  mirv.orbit = p1.position.x - 100;
-               } else {
-                  mirv.orbit = p1.position.x + 100;
-               }
-               if (mirv.position.x > mirv.orbit) {
-                  mirv.velocity.x = fapproach(mirv.velocity.x, -1, 0.01);
-               } else {
-                  mirv.velocity.x = fapproach(mirv.velocity.x, 1, 0.01);
-               }
-               if (mirv.position.y > p1.position.y - hover) {
-                  mirv.velocity.y = fapproach(mirv.velocity.y, -1, 0.01);
-               } else {
-                  mirv.velocity.y = fapproach(mirv.velocity.y, 1, 0.01);
-               }
-               if (!mirv.timer) {
-                  if ((rand() % 100) < 30) {
-                     mirv.state = ma_rise;
+      if ((mirv.hurttimer/2)%2) {
+         drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 2, mirv.flip);
+      } else {
+         switch (mirv.state) {
+            case ma_entry:
+               {
+                  mirv.velocity.y += gravity;
+                  if (mirv.hitpoints < 100) {
+                     mirv.state = ma_taunt;
+                     mirv.timer = 30;
+                  }
+                  drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 0, mirv.flip);
+               }break;
+            case ma_taunt:
+               {
+                  mirv.velocity.y += gravity;
+                  if (!mirv.timer) {
                      play(sound.mirv_engine);
-                  } else {
-                     mirv.state = ma_findland;
+                     mirv.state = ma_takeoff;
+                     mirv.orbit = mirv.position.x - 4;
                   }
-               }
-               mirv.frame += 0.2;
-               drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
-            }break;
-         case ma_dive:
-            {
-               mirv.frame += 0.1;
-               drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
-            }break;
-         case ma_findland:
-            {
-               mirv.velocity.y += gravity;
-               if (rectOnGround(&mirvbounds)) {
-                  mirv.velocity.x = 0;
-                  mirv.state = ma_shotgun;
-                  mirv.timer = 20;
-                  play(sound.mirv_shotgun);
-                  if (mirv.flip) {
-                     fireMirvRocket(mirv.position.x - 16, mirv.position.y, -3, -1, 2);
-                     fireMirvRocket(mirv.position.x - 16, mirv.position.y, -3, 0, 2);
-                     fireMirvRocket(mirv.position.x - 16, mirv.position.y, -3, 1, 2);
+                  drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 1, mirv.flip);
+               }break;
+            case ma_fly:
+               {
+                  if (p1.position.x < 150) {
+                     mirv.orbit = p1.position.x + 100;
+                  } else if (p1.position.x > room.bounds.w - 150) {
+                     mirv.orbit = p1.position.x - 100;
                   } else {
-                     fireMirvRocket(mirv.position.x + 16, mirv.position.y,  3, -1, 0);
-                     fireMirvRocket(mirv.position.x + 16, mirv.position.y,  3, 0, 0);
-                     fireMirvRocket(mirv.position.x + 16, mirv.position.y,  3, 1, 0);
-                  }
-               }
-               drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 4, mirv.flip);
-            }break;
-         case ma_shotgun:
-            {
-               if (!mirv.timer) {
-                  mirv.timer = 50;
-                  mirv.state = ma_taunt;
-               }
-               drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 3, mirv.flip);
-            }break;
-         case ma_takeoff:
-            {
-               if (mirv.position.y < p1.position.y - hover) {
-                  mirv.state = ma_fly;
-                  mirv.timer = 500 + (rand() % 1000);
-               }
-               if (mirv.position.x > mirv.orbit) {
-                  mirv.velocity.x = fapproach(mirv.velocity.x, -1, 0.01);
-               } else {
-                  mirv.velocity.x = fapproach(mirv.velocity.x, 1, 0.01);
-               }
-               mirv.velocity.y = fapproach(mirv.velocity.y, -1, 0.01);
-               mirv.frame += 0.6;
-               drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
-            }break;
-         case ma_rise:
-            {
-               if (mirv.position.y < p1.position.y - 2*hover) {
-                  mirv.state = ma_bomb;
-                  mirv.timer = 20;
-                  float startx = p1.position.x - 300;
-                  float maxx = p1.position.x + 300;
-                  float launchy = camera.position.y - 16;
-                  for (float lx = startx; lx < maxx; lx += 32) {
-                     switch (rand() % 3) {
-                        case 0:
-                           fireMirvRocket(lx, launchy, -0.1, 2, 3);
-                           break;
-                        case 1:
-                           fireMirvRocket(lx, launchy, 0, 2, 3);
-                           break;
-                        case 2:
-                           fireMirvRocket(lx, launchy, 0.1, 2, 3);
-                           break;
+                     if ((frame/1000)%2) {
+                        mirv.orbit = p1.position.x - 100;
+                     } else {
+                        mirv.orbit = p1.position.x + 100;
                      }
                   }
-               }
-               mirv.velocity.x = 0;
-               mirv.velocity.y = fapproach(mirv.velocity.y, -1, 0.01);
-               mirv.frame += 0.6;
-               drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
-            }break;
-         case ma_bomb:
-            {
-               if (!mirv.timer) {
-                  mirv.state = ma_fly;
-                  mirv.timer = 500 + (rand() % 1000);
-               }
-            }break;
-         default:
-            break;
+                  if (mirv.position.x > mirv.orbit) {
+                     mirv.velocity.x = fapproach(mirv.velocity.x, -1, 0.01);
+                  } else {
+                     mirv.velocity.x = fapproach(mirv.velocity.x, 1, 0.01);
+                  }
+                  if (mirv.position.y > p1.position.y - hover) {
+                     mirv.velocity.y = fapproach(mirv.velocity.y, -1, 0.01);
+                  } else {
+                     mirv.velocity.y = fapproach(mirv.velocity.y, 1, 0.01);
+                  }
+                  if (!mirv.timer) {
+                     if ((rand() % 100) < 30) {
+                        mirv.state = ma_rise;
+                        play(sound.mirv_engine);
+                     } else {
+                        mirv.state = ma_findland;
+                     }
+                  }
+                  mirv.frame += 0.2;
+                  drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
+               }break;
+            case ma_dive:
+               {
+                  mirv.frame += 0.1;
+                  drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
+               }break;
+            case ma_findland:
+               {
+                  mirv.velocity.y += gravity;
+                  if (rectOnGround(&mirvbounds)) {
+                     mirv.velocity.x = 0;
+                     mirv.state = ma_shotgun;
+                     mirv.timer = 20;
+                     play(sound.mirv_shotgun);
+                     if (mirv.flip) {
+                        fireMirvRocket(mirv.position.x - 16, mirv.position.y, -3, -1, 2);
+                        fireMirvRocket(mirv.position.x - 16, mirv.position.y, -3, 0, 2);
+                        fireMirvRocket(mirv.position.x - 16, mirv.position.y, -3, 1, 2);
+                     } else {
+                        fireMirvRocket(mirv.position.x + 16, mirv.position.y,  3, -1, 0);
+                        fireMirvRocket(mirv.position.x + 16, mirv.position.y,  3, 0, 0);
+                        fireMirvRocket(mirv.position.x + 16, mirv.position.y,  3, 1, 0);
+                     }
+                  }
+                  drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 4, mirv.flip);
+               }break;
+            case ma_shotgun:
+               {
+                  if (!mirv.timer) {
+                     mirv.timer = 50;
+                     mirv.state = ma_taunt;
+                  }
+                  drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 3, mirv.flip);
+               }break;
+            case ma_takeoff:
+               {
+                  if (mirv.position.y < p1.position.y - hover) {
+                     mirv.state = ma_fly;
+                     mirv.timer = 500 + (rand() % 1000);
+                  }
+                  if (mirv.position.x > mirv.orbit) {
+                     mirv.velocity.x = fapproach(mirv.velocity.x, -1, 0.01);
+                  } else {
+                     mirv.velocity.x = fapproach(mirv.velocity.x, 1, 0.01);
+                  }
+                  mirv.velocity.y = fapproach(mirv.velocity.y, -1, 0.01);
+                  mirv.frame += 0.6;
+                  drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
+               }break;
+            case ma_rise:
+               {
+                  if (mirv.position.y < p1.position.y - 2*hover) {
+                     mirv.state = ma_bomb;
+                     mirv.timer = 20;
+                     float startx = p1.position.x - 300;
+                     float maxx = p1.position.x + 300;
+                     float launchy = camera.position.y - 16;
+                     for (float lx = startx; lx < maxx; lx += 32) {
+                        switch (rand() % 3) {
+                           case 0:
+                              fireMirvRocket(lx, launchy, -0.1, 2, 3);
+                              break;
+                           case 1:
+                              fireMirvRocket(lx, launchy, 0, 2, 3);
+                              break;
+                           case 2:
+                              fireMirvRocket(lx, launchy, 0.1, 2, 3);
+                              break;
+                        }
+                     }
+                  }
+                  mirv.velocity.x = fapproach(mirv.velocity.x, 0, 0.05);
+                  mirv.velocity.y = fapproach(mirv.velocity.y, -1, 0.01);
+                  mirv.frame += 0.6;
+                  drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
+               }break;
+            case ma_bomb:
+               {
+                  if (!mirv.timer) {
+                     mirv.state = ma_fly;
+                     mirv.timer = 500 + (rand() % 1000);
+                  }
+               }break;
+            default:
+               break;
+         }
       }
       v2 displacement;
       getMotionWalled(&mirvbounds, &mirv.velocity, &mirv.velocity, &displacement);
@@ -2659,7 +2695,7 @@ int main(int argc, char ** argv)
 
    testsprite st = createTestSprite(10, 10, 255, 255, 0);
 
-   loadLevel("startroom.txt", 0);
+   loadLevel("bossroom.txt", 0);
 
    float t;
    float angle = 0.f;
