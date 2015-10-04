@@ -2056,7 +2056,7 @@ void doMirv()
                play(sound.hit);
                shot->position.x = -1000;
                mirv.hitpoints = max(0, mirv.hitpoints - 5);
-               mirv.hurttimer = 20;
+               mirv.hurttimer = 40;
             }
             if (!mirv.hitpoints) {
                play(sound.mirv_die);
