@@ -1202,8 +1202,10 @@ void healPlayer(int amount)
 int player_hurt_threshold = 180;
 void tickPlayer(player *p)
 {
-   float player_accel = 0.1;
+   float player_accel = 0.4;
+   float player_decel = 0.1;
    float player_wspeed = 1.5;
+   float player_ladderspeed = 1;
    float player_gravity = 0.09;
    float player_jump = 4.5;
    float player_shot_speed = 2.5;
@@ -1247,9 +1249,9 @@ void tickPlayer(player *p)
             if (l) {
                p->position.x = fapproach(p->position.x, l->bounds.x + l->bounds.w * 0.5, 1);
                if (con.up->held) {
-                  p->position.y -= 1;
+                  p->position.y = fapproach(p->position.y, l->bounds.y - 8, player_ladderspeed);
                } else if (con.down->held) {
-                  p->position.y += 1;
+                  p->position.y = fapproach(p->position.y, l->bounds.y + l->bounds.h + 8, player_ladderspeed);
                }
                if (con.jump->pressed) {
                   if (!rectIntersectsWalls(getPlayerBounds(p))) {
@@ -1267,10 +1269,12 @@ void tickPlayer(player *p)
             rect bounds = *getPlayerBounds(p);
             if (con.left->held) {
                p->velocity.x = fapproach(p->velocity.x, -player_wspeed, player_accel);
+               p->flip = 1;
             } else if (con.right->held) {
                p->velocity.x = fapproach(p->velocity.x, player_wspeed, player_accel);
+               p->flip = 0;
             } else {
-               p->velocity.x = fapproach(p->velocity.x, 0, player_accel);
+               p->velocity.x = fapproach(p->velocity.x, 0, player_decel);
             }
 
             if (con.jump->held && con.jump->frames < player_jump_grace) {
@@ -1309,11 +1313,6 @@ void tickPlayer(player *p)
                   p->onladder = 1;
                }
             }
-            if (p->velocity.x > 0) {
-               p->flip = 0;
-            } else if (p->velocity.x < 0) {
-               p->flip = 1;
-            }
          }
       }
    } else {
@@ -1340,11 +1339,19 @@ void drawPlayer(player *p)
    } else {
       if (!((p->hurt_timer / 2)%2)) {
          if (!p->onladder) {
-            if (fabs(p->velocity.x) > 0.1) {
-               p->frame += 0.2;
-               drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 4, 4, &p->frame, p->flip);
+            if (fabs(p->velocity.y) > 0.1) {
+               if (p->velocity.y > 0) {
+                  drawAspriteFrame(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 17, p->flip);
+               } else {
+                  drawAspriteFrame(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 16, p->flip);
+               }
             } else {
-               drawAspriteFrame(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 0, p->flip);
+               if (fabs(p->velocity.x) > 0.1) {
+                  p->frame += 0.2;
+                  drawAnimatingAsprite(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 4, 4, &p->frame, p->flip);
+               } else {
+                  drawAspriteFrame(&p->spr, p->position.x + ofs_x, p->position.y + ofs_y, 0, p->flip);
+               }
             }
          } else {
             if (con.up->held) {
@@ -1395,7 +1402,7 @@ void createBoulder(float x, float y)
    if (bb) {
       createWall(x, y + 32, 64, 32);
       bb->blocker = tc_back(wall);
-      bb->hitpoints = 20;
+      bb->hitpoints = 8;
       bb->spr = createAsprite(tex.stone, 64, 64);
    }
 }
@@ -1480,6 +1487,7 @@ void createSaucerMob(float x, float y)
       s->spr = createAsprite(tex.robots, 16, 16);
       s->position = makev2(x, y);
       s->hitpoints = 4;
+      s->state_timer = rand() % 74;
    }
 }
 
@@ -1579,7 +1587,7 @@ struct mirvrocket {
    v2 velocity;
 };
 
-tc_create(mirvrocket, mirvr, 32);
+tc_create(mirvrocket, mirvr, 512);
 
 void fireMirvRocket(float x, float y, float hs, float vs, int dir)
 {
@@ -1813,9 +1821,16 @@ void tickEnemies()
          continue;
       }
       mr->position = mr->position + mr->velocity;
-      if (!rectInRoom(&rocketbounds)) {
-         tc_erase(mirvr, i);
-         continue;
+      if (mr->position.y > 0) {
+         if (!rectInRoom(&rocketbounds)) {
+            tc_erase(mirvr, i);
+            continue;
+         }
+      } else {
+         if (mr->position.x < 0 || mr->position.x > room.bounds.w) {
+            tc_erase(mirvr, i);
+            continue;
+         }
       }
       i++;
    }
@@ -2059,6 +2074,11 @@ void doMirv()
       float gravity = 0.05;
       float hover = 150;
 
+      if (mirv.hitpoints <= 40) {
+         hover = 200;
+         gravity = 0.08;
+      }
+
       if ((mirv.hurttimer/2)%2) {
          drawAspriteFrame(&mirv.spr, drawpos.x, drawpos.y, 2, mirv.flip);
       } else {
@@ -2095,6 +2115,13 @@ void doMirv()
                         mirv.orbit = p1.position.x + 100;
                      }
                   }
+                  if (mirv.hitpoints > 50) {
+                     if (mirv.position.x < p1.position.x && mirv.orbit > p1.position.x) {
+                        hover = 16;
+                     } else if (mirv.position.x > p1.position.x && mirv.orbit < p1.position.x) {
+                        hover = 16;
+                     }
+                  }
                   if (mirv.position.x > mirv.orbit) {
                      mirv.velocity.x = fapproach(mirv.velocity.x, -1, 0.01);
                   } else {
@@ -2106,14 +2133,18 @@ void doMirv()
                      mirv.velocity.y = fapproach(mirv.velocity.y, 1, 0.01);
                   }
                   if (!mirv.timer) {
-                     if ((rand() % 100) < 30) {
+                     if ((rand() % 100) < 45) {
                         mirv.state = ma_rise;
                         play(sound.mirv_engine);
                      } else {
                         mirv.state = ma_findland;
                      }
                   }
-                  mirv.frame += 0.2;
+                  if (mirv.position.y > p1.position.y - hover) {
+                     mirv.frame += 0.3;
+                  } else {
+                     mirv.frame += 0.2;
+                  }
                   drawAnimatingAsprite(&mirv.spr, drawpos.x, drawpos.y, 4, 4, &mirv.frame, mirv.flip);
                }break;
             case ma_dive:
@@ -2153,7 +2184,11 @@ void doMirv()
                {
                   if (mirv.position.y < p1.position.y - hover) {
                      mirv.state = ma_fly;
-                     mirv.timer = 500 + (rand() % 1000);
+                     if (mirv.hitpoints > 50) {
+                        mirv.timer = 500 + (rand() % 1000);
+                     } else {
+                        mirv.timer = 100 + (rand() % 400);
+                     }
                   }
                   if (mirv.position.x > mirv.orbit) {
                      mirv.velocity.x = fapproach(mirv.velocity.x, -1, 0.01);
@@ -2172,18 +2207,29 @@ void doMirv()
                      float startx = p1.position.x - 300;
                      float maxx = p1.position.x + 300;
                      float launchy = camera.position.y - 16;
-                     for (float lx = startx; lx < maxx; lx += 32) {
-                        switch (rand() % 3) {
-                           case 0:
-                              fireMirvRocket(lx, launchy, -0.1, 2, 3);
-                              break;
-                           case 1:
-                              fireMirvRocket(lx, launchy, 0, 2, 3);
-                              break;
-                           case 2:
-                              fireMirvRocket(lx, launchy, 0.1, 2, 3);
-                              break;
+                     int bombwaves;
+                     if (mirv.hitpoints > 60) {
+                        bombwaves = 1;
+                     } else if (mirv.hitpoints > 30) {
+                        bombwaves = 2;
+                     } else {
+                        bombwaves = 3;
+                     }
+                     for (int i = 0; i < bombwaves; i++) {
+                        for (float lx = startx; lx < maxx; lx += 32) {
+                           switch (rand() % 3) {
+                              case 0:
+                                 fireMirvRocket(lx, launchy, -0.1, 2, 3);
+                                 break;
+                              case 1:
+                                 fireMirvRocket(lx, launchy, 0, 2, 3);
+                                 break;
+                              case 2:
+                                 fireMirvRocket(lx, launchy, 0.1, 2, 3);
+                                 break;
+                           }
                         }
+                        launchy -= 120;
                      }
                   }
                   mirv.velocity.x = fapproach(mirv.velocity.x, 0, 0.05);
@@ -2195,7 +2241,11 @@ void doMirv()
                {
                   if (!mirv.timer) {
                      mirv.state = ma_fly;
-                     mirv.timer = 500 + (rand() % 1000);
+                     if (mirv.hitpoints > 50) {
+                        mirv.timer = 500 + (rand() % 1000);
+                     } else {
+                        mirv.timer = 100 + (rand() % 400);
+                     }
                   }
                }break;
             default:
@@ -2660,7 +2710,7 @@ int main(int argc, char ** argv)
    Uint64 next_step = SDL_GetPerformanceCounter() + step_size;
    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK);
    atexit(SDL_Quit);
-   win = SDL_CreateWindow("figjam", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, start_w, start_h, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+   win = SDL_CreateWindow("Saber vs. Merciless Mirv", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, start_w, start_h, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
    ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
    pixelbuffer = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, field_w, field_h);
    reproject_screen(start_w, start_h);
