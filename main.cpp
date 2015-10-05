@@ -2711,10 +2711,10 @@ void reproject_screen(int w, int h)
 
 void setupControls(int forcekeys)
 {
-   if (joy) {
-      SDL_JoystickClose(joy);
+   if (!joy) {
+      joy = SDL_JoystickOpen(0);
    }
-   joy = SDL_JoystickOpen(0);
+   clearBindings();
    if (joy && !forcekeys) {
       con.left = bindAxis(0, -1);
       con.right = bindAxis(0, 1);
