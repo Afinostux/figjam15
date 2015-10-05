@@ -973,6 +973,11 @@ control * bindButton(int button)
    return nc;
 }
 
+void clearBindings()
+{
+   countof(control) = 0;
+}
+
 struct {
    control *left;
    control *up;
@@ -2704,6 +2709,39 @@ void reproject_screen(int w, int h)
    projection.y = (h - projection.h)/2;
 }
 
+void setupControls(int forcekeys)
+{
+   if (joy) {
+      SDL_JoystickClose(joy);
+   }
+   joy = SDL_JoystickOpen(0);
+   if (joy && !forcekeys) {
+      con.left = bindAxis(0, -1);
+      con.right = bindAxis(0, 1);
+      con.up = bindAxis(1, -1);
+      con.down = bindAxis(1, 1);
+      // NOTE(afox): xbox controller buttons are different on windows for some reason?
+#ifdef _WIN32
+      con.jump = bindButton(10);
+      con.fire = bindButton(12);
+      con.reset = bindButton(5);
+#else
+      con.jump = bindButton(0);
+      con.fire = bindButton(2);
+      con.reset = bindButton(8);
+#endif
+   } else {
+      con.left = bindKey(SDLK_LEFT);
+      con.right = bindKey(SDLK_RIGHT);
+      con.up = bindKey(SDLK_UP);
+      con.down = bindKey(SDLK_DOWN);
+      con.jump = bindKey(SDLK_d);
+      con.fire = bindKey(SDLK_f);
+      con.reset = bindKey(SDLK_BACKSPACE);
+   }
+
+}
+
 int main(int argc, char ** argv)
 {
    Uint64 step_size = secondsToPCF(0.01);
@@ -2745,40 +2783,16 @@ int main(int argc, char ** argv)
 
    testsprite st = createTestSprite(10, 10, 255, 255, 0);
 
-   loadLevel("bossroom.txt", 0);
+   loadLevel("startroom.txt", 0);
 
    float t;
    float angle = 0.f;
    rect test = makeRect(field_w/2, field_h/2, 16, 16);
    rect res = test;
    v2 testvel;
-   
-   joy = SDL_JoystickOpen(0);
-   if (joy) {
-      con.left = bindAxis(0, -1);
-      con.right = bindAxis(0, 1);
-      con.up = bindAxis(1, -1);
-      con.down = bindAxis(1, 1);
-      // NOTE(afox): xbox controller buttons are different on windows for some reason?
-#ifdef _WIN32
-      con.jump = bindButton(10);
-      con.fire = bindButton(12);
-      con.reset = bindButton(5);
-#else
-      con.jump = bindButton(0);
-      con.fire = bindButton(2);
-      con.reset = bindButton(8);
-#endif
-   } else {
-      con.left = bindKey(SDLK_LEFT);
-      con.right = bindKey(SDLK_RIGHT);
-      con.up = bindKey(SDLK_UP);
-      con.down = bindKey(SDLK_DOWN);
-      con.jump = bindKey(SDLK_d);
-      con.fire = bindKey(SDLK_f);
-      con.reset = bindKey(SDLK_BACKSPACE);
-   }
 
+   setupControls(0);
+   
    while (running) {
       if (con.reset->pressed) {
          loadLevel("startroom.txt", 0);
@@ -2798,6 +2812,10 @@ int main(int argc, char ** argv)
             case SDL_KEYDOWN:
                if (e.key.keysym.sym == SDLK_ESCAPE) {
                   running = false;
+               } else if (e.key.keysym.sym == SDLK_F2) {
+                  setupControls(1);
+               } else if (e.key.keysym.sym == SDLK_F3) {
+                  setupControls(0);
                }
             case SDL_KEYUP:
             case SDL_JOYAXISMOTION:
